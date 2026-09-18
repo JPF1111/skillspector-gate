@@ -1,0 +1,15 @@
+{
+  "name": "skillspector-gate",
+  "description": "Mandatory pre-execution security gate for Claude Code Skills, built on NVIDIA SkillSpector.",
+  "owner": {
+    "name": "JP Finley",
+    "url": "https://github.com/JPF1111"
+  },
+  "plugins": [
+    {
+      "name": "skillspector-gate",
+      "source": "./",
+      "description": "Blocks any Skill tool invocation until it's been scanned by SkillSpector and approved into a content-hash-keyed ledger; re-blocks automatically on any change."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "skillspector-gate",
+  "version": "0.1.0",
+  "description": "Mandatory pre-execution security gate for the Skill tool: blocks any skill invocation until NVIDIA SkillSpector has scanned and approved it, and re-blocks the moment its content changes.",
+  "author": {
+    "name": "JP Finley"
+  },
+  "homepage": "https://github.com/JPF1111/skillspector-gate",
+  "license": "Apache-2.0",
+  "keywords": ["security", "skills", "skillspector", "supply-chain", "hooks"]
+}
