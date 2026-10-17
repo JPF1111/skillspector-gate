@@ -5,6 +5,8 @@
 #
 # Usage: hash-skill.sh <dir>
 set -uo pipefail
+# Pin collation: `sort` order (and so the hash) otherwise depends on the caller's locale.
+export LC_ALL=C
 
 dir="${1:?usage: hash-skill.sh <dir>}"
 [ -d "$dir" ] || exit 1

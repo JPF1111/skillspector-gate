@@ -99,7 +99,8 @@ resolved path. `scripts/resolve-skill.sh` maps a name to a real directory (globa
 `~/.claude/skills/<name>`, project-level `.claude/skills/<name>` walking up from `cwd`, or
 `<plugin>:<skill>` resolved via `~/.claude/plugins/installed_plugins.json`).
 `scripts/hash-skill.sh` produces a SHA-256 over every file's path+content, sorted, so it's
-order-independent and changes on any edit. `scripts/gate-skill.sh` ties it together and emits
+order-independent and changes on any edit. It pins `LC_ALL=C`, so the sort order (and the hash)
+is the same whether it runs from your shell or from a hook with no `LANG` set. `scripts/gate-skill.sh` ties it together and emits
 the hook's `allow`/`deny` decision.
 
 **What's gated:** anything under `~/.claude/skills/` (except `synced/`), project-level
@@ -126,6 +127,11 @@ is for.
 - **A skill I approved is still blocked** — almost always a hash mismatch: something in the
   skill directory changed since the last `approve.py` run (even a trailing newline). Re-run
   it.
+- **Approved skills blocked after updating to the locale fix** — before `hash-skill.sh` pinned
+  `LC_ALL=C`, the hash depended on the caller's collation: an approval run from a UTF-8 shell
+  (e.g. `en_US.UTF-8`) sorted files differently from the hook, which runs with no `LANG`.
+  Ledger entries recorded under a non-C locale will mismatch once; re-run `approve.py` for each
+  to rehash. Entries recorded under `C`/no locale are unaffected.
 - **`skillspector: command not found`** — install it (see above); `approve.py` checks `PATH`
   first, then `~/.local/bin/skillspector`.
 - **Hook doesn't seem to fire after install/update** — run `/hooks` once to reload config, or
