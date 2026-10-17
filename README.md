@@ -26,10 +26,15 @@ approved simply don't run."
 
 ## What's in the box
 
-- **The gate** — a `PreToolUse` hook on the `Skill` tool. Before any skill runs, it resolves
-  the skill's name to its real on-disk directory, hashes the directory's contents, and checks
-  a local approval ledger. No entry, a hash mismatch (content changed since approval), or a
-  `REJECT` verdict → blocked, with the exact command to unblock it printed in the error.
+- **The gate** — a `PreToolUse` hook on the `Skill` and `Agent` tools. Before any skill runs, it
+  resolves the skill's name to its real on-disk directory, hashes the directory's contents, and
+  checks a local approval ledger. No entry, a hash mismatch (content changed since approval), or a
+  `REJECT` verdict → blocked, with the exact command to unblock it printed in the error. For a
+  plugin, the gate also checks the plugin's **shell** — everything in its install directory
+  outside `skills/` (agents, commands, scripts, hooks, rules, MCP config) — so a plugin agent, a
+  plugin command, or a plugin-level script a skill runs cannot change without re-approval.
+- **`audit.sh`** — runs every installed skill, plugin command and plugin agent through the gate
+  and prints each decision.
 - **`skill-inspector`** — SkillSpector's own companion Claude Code Skill (vendored verbatim,
   see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)), which runs the static scan and then
   a source-aware semantic read, and reports `APPROVE` / `CAUTION` / `REJECT`.
@@ -82,6 +87,23 @@ python3 <plugin-dir>/scripts/approve.py "<resolved skill dir>" \
 - `<plugin-dir>` — find it with `claude plugin details skillspector-gate`, or use the exact
   command the gate's own deny message prints the first time it blocks the skill.
 
+**Approve a plugin's shell** (needed once per installed plugin version before any of its
+skills, commands or agents run):
+
+```bash
+python3 <plugin-dir>/scripts/approve.py --shell "<plugin install dir>" \
+  --verdict CAUTION --note "agents/, scripts/, mcp.json read; ..." \
+  [--member-verdict some-agent=REJECT]
+```
+
+`--member-verdict NAME=REJECT` blocks one skill, command or agent of an otherwise approved
+plugin. The install dir is the plugin's `installPath` in `~/.claude/plugins/installed_plugins.json`,
+or the path the gate's deny message prints. A plugin update installs to a new versioned path, so
+it needs a fresh shell approval, the same as its skills.
+
+**Audit everything:** `bash <plugin-dir>/scripts/audit.sh --quiet` — exits non-zero if anything is
+denied for a reason other than a recorded `REJECT`.
+
 **Re-approve after a skill changes:** same command — the ledger is keyed by content hash, so
 editing a skill's files already invalidated the old entry.
 
@@ -104,7 +126,25 @@ is the same whether it runs from your shell or from a hook with no `LANG` set. `
 the hook's `allow`/`deny` decision.
 
 **What's gated:** anything under `~/.claude/skills/` (except `synced/`), project-level
-`.claude/skills/`, and skills inside any plugin listed in `installed_plugins.json`.
+`.claude/skills/`, and — for any plugin listed in `installed_plugins.json` — its skills
+(`Skill` tool), its commands (`Skill` tool, `commands/<name>.md`) and its agents (`Agent` tool,
+`agents/<name>.md`). Every plugin member also needs the plugin's shell entry
+(`hash-skill.sh --shell`: the install dir minus `skills/` and Claude Code's `.in_use/` lock
+files). A plugin-qualified name from an installed plugin that matches no skill, command or agent
+on disk is denied.
+
+**Not covered — stated so no one mistakes this for more than it is:**
+- A file reached by *reading* it (the `Read` tool, `cat`, a link one skill gives to another, or a
+  skill downloaded at run time and then "read and followed") is not an invocation and is not
+  gated. Content an approved skill reads from inside its own directory or its plugin's shell is
+  covered by those hashes; anything else it fetches is governed by your instruction-source rules,
+  not this ledger. A `Read` gate was considered and not built: it would also block the review step
+  (`skill-inspector` has to read a skill before it can be approved).
+- Plugin **hooks** run on their own events, not through `Skill` or `Agent`, so a `PreToolUse` gate
+  cannot stop them. Their files are in the shell hash, which flags a change at the next skill or
+  agent call from that plugin, but the hook itself has already run by then.
+- Non-plugin subagent types (built-in, `~/.claude/agents/`, project `.claude/agents/`).
+- Remote MCP servers a plugin's `mcp.json` points at: the config is hashed, the server is not.
 
 **What's intentionally not gated:** Claude Code's own bundled/built-in skills (no on-disk
 directory to hash) and skills synced from your claude.ai account under
