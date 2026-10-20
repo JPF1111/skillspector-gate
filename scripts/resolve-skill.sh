@@ -7,7 +7,19 @@
 # neither has a directory this gate controls; see the README).
 #
 # Usage: resolve-skill.sh <skill-name> <cwd>
+#        resolve-skill.sh --plugin-root <plugin>:<member>
+#
+# --plugin-root prints the real install directory of the plugin named
+# before the colon, if it is listed in installed_plugins.json, and exits
+# 1 otherwise. The gate uses it to check the plugin's shell entry (see
+# hash-skill.sh --shell) for plugin skills, commands and agents.
 set -uo pipefail
+
+plugin_root_only=0
+if [ "${1:-}" = "--plugin-root" ]; then
+  plugin_root_only=1
+  shift
+fi
 
 name="${1:-}"
 cwd="${2:-$PWD}"
@@ -41,6 +53,12 @@ for key, entries in plugins.items():
 sys.exit(1)
 " 2>/dev/null)
   [ -z "$install_path" ] && exit 1
+  [ -d "$install_path" ] || exit 1
+
+  if [ "$plugin_root_only" -eq 1 ]; then
+    resolve_real "$install_path"
+    exit 0
+  fi
 
   candidate="$install_path/skills/$skill"
   if [ -d "$candidate" ]; then
@@ -56,6 +74,8 @@ sys.exit(1)
   fi
   exit 1
 fi
+
+[ "$plugin_root_only" -eq 1 ] && exit 1
 
 # Global skill.
 if [ -d "$HOME/.claude/skills/$name" ] && [ -f "$HOME/.claude/skills/$name/SKILL.md" ]; then
