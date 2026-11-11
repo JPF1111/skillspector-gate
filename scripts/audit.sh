@@ -13,11 +13,13 @@
 # A deny caused by a recorded REJECT verdict is the gate doing what it was
 # told, so it is counted as "rejected", not as a failure.
 #
-# Usage: audit.sh [--quiet]   (exit 1 if anything is denied for any other reason)
+# Usage: [AUDIT_GATE=<gate-skill.sh>] audit.sh [--quiet]   (exit 1 if anything is denied for any other reason)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GATE="$SCRIPT_DIR/gate-skill.sh"
+# AUDIT_GATE runs the same walk through another gate script (e.g. the one
+# installed before an upgrade), so before/after decisions can be compared.
+GATE="${AUDIT_GATE:-$SCRIPT_DIR/gate-skill.sh}"
 quiet=0; [ "${1:-}" = "--quiet" ] && quiet=1
 
 allow=0; deny=0; rejected=0

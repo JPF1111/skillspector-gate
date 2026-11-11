@@ -23,7 +23,7 @@ printf 'writer\n' > "$plug/agents/writer.md"
 printf 'reader\n' > "$plug/agents/reader.md"
 printf 'cmd\n'    > "$plug/commands/go.md"
 printf 'print(1)\n' > "$plug/scripts/validate.py"
-printf '{"pid":1}\n' > "$plug/.in_use/1"
+printf '{"pid":1,"procStart":"Wed Nov 11 01:49:15 2026"}' > "$plug/.in_use/1"
 cat > "$HOME/.claude/plugins/installed_plugins.json" <<EOF
 {"plugins": {"demo@mkt": [{"installPath": "$plug"}]}}
 EOF
@@ -41,7 +41,7 @@ approve() { python3 "$scripts/approve.py" "$@" --skip-scan --note test >/dev/nul
 
 # Shell hash excludes skills/ and .in_use/, includes everything else.
 h0=$(bash "$scripts/hash-skill.sh" --shell "$plug")
-printf '{"pid":2}\n' > "$plug/.in_use/2"
+printf '{"pid":2,"procStart":"Wed Nov 11 01:49:15 2026"}' > "$plug/.in_use/2"
 printf 'alpha edited\n' > "$plug/skills/alpha/SKILL.md"
 [ "$(bash "$scripts/hash-skill.sh" --shell "$plug")" = "$h0" ] \
   && { pass=$((pass+1)); echo "ok   shell hash ignores skills/ and .in_use/"; } \
@@ -73,7 +73,7 @@ check deny  "glob in member name denied"                    "$(agent 'demo:*')"
 check deny  "path traversal in member name denied"          "$(skill demo:..)"
 
 # Per-session lock files do not invalidate the shell.
-printf '{"pid":3}\n' > "$plug/.in_use/3"
+printf '{"pid":3,"procStart":"Wed Nov 11 01:49:15 2026"}' > "$plug/.in_use/3"
 check allow ".in_use churn keeps shell valid" "$(agent demo:reader)"
 
 # Gap (b): a plugin-level script changes -> shell stale -> skill and agent denied.
@@ -139,6 +139,19 @@ printf 'echo pwned\n' > "$plug/.in_use/payload.sh"
 check deny  "non-lock file under .in_use/ makes shell stale" "$(agent demo:reader)"
 rm "$plug/.in_use/payload.sh"
 check allow "removing it restores the approved shell" "$(agent demo:reader)"
+# A digits-named file that is not a real lock (the review's repro) is hashed...
+printf 'echo pwned\n' > "$plug/.in_use/99999"
+check deny  "digits-named payload under .in_use/ makes shell stale" "$(agent demo:reader)"
+printf '{"pid":99999,"procStart":"$(rm -rf ~)"}' > "$plug/.in_use/99999"
+check deny  "lock-shaped file with odd procStart is hashed" "$(agent demo:reader)"
+printf '{"pid":12345,"procStart":"Wed Nov 11 01:49:15 2026"}' > "$plug/.in_use/99999"
+check deny  "lock whose pid does not match its name is hashed" "$(agent demo:reader)"
+rm "$plug/.in_use/99999"
+# ...and a symlink into .in_use/ cannot be hashed at all.
+ln -s ../.in_use/1 "$plug/scripts/hook.sh"
+check deny  "symlink into .in_use/ denied" "$(agent demo:reader)"
+rm "$plug/scripts/hook.sh"
+check allow "real lock files still skipped" "$(agent demo:reader)"
 
 # 4. A plugin name under two marketplaces: every install dir is checked.
 plug2="$HOME/.claude/plugins/cache/other/demo/9.9.9"
