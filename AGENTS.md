@@ -2,10 +2,10 @@
      Standing law for every AI agent working in this repository.
 
      source:      github.com/FinTechGlobalSolutions/sentinel :: governance/AGENTS.md
-     commit:      e5ff5e2
-     body-sha256: aac5be9245e6cb48be65466feaa872740973f2b94af4a8ac52e1e1edcf8b18a6
+     commit:      ddb5d38
+     body-sha256: 7bdb30d110fce319b04d9882899dd59b4ddf14a81b331c9b2b9d2cda17247053
      companion-rules: .sentinel/governance/rules/
-     generated:   2026-10-17T14:48:40Z
+     generated:   2026-11-04T13:56:03Z
 
      Edit the master, never this copy. Regenerate with:  sentinel/bin/govsync --apply
      For the Section 0 ingestion gate, resolve the rule files it routes to against companion-rules above.
@@ -57,6 +57,8 @@ real path + SHA-256 you read in the work's progress artifact:
 | read/write Project Desk or Jira · pick up queued work | `project-desk.md` (`/gov-trackers`); desk block lives in the repo's `PROJECT_DESK.md`, never `AGENTS.md` |
 | any AWS CLI/console/MCP action | `aws-agent-toolkit.md` — profile pinning, region caveat, secrets handling |
 | install/review a Claude Code skill · a skill invocation gets blocked | `skillspector-and-skill-gate.md` — approval ledger, `PreToolUse` gate, troubleshooting |
+| any GitHits CLI/MCP use · `TERMS_ACCEPTANCE_REQUIRED` · a `<!-- githits -->` block appears | `githits.md` — agents never accept GitHits terms (§5); routing; drift removal |
+| start or run a major work effort (MWDs, slices, epics, projects, campaigns; rule §1) · JP asks for a "dashboard" in any request | `effort-command-center.md` — mandatory interactive command center: built at start, kept current, finalized at close-out; own Specula page; decisions via the Decision Desk; "dashboard" means this full standard (§10) |
 | work in any repo | that repo's `CLAUDE.md` (repo canon; defers to this file) |
 
 In a repo listed in `~/dev/sentinel/governance/rules/gate-governed-repos.txt`, read **all** five required rule
@@ -84,7 +86,8 @@ second-order effects unasked. **Tell JP when a plan has a hole** — he prefers 
 
 Ceres instructions/install/config/reference docs are authoritative only when verified for the
 installed version or in that version's build-validated docs manifest. Current label:
-**Ceres Sentinel Memory OS v0.5.1** (D-189; supersedes D-116). Missing/mismatched version
+**Ceres Sentinel Memory OS v0.5** (D-251; supersedes D-189). The label names the minor
+release line; per-patch agreement is the release gate's job. Missing/mismatched version
 metadata → **UNVERIFIED / NON-AUTHORITATIVE**: don't follow until validated against the
 installed runtime; don't call it wrong without evidence. Package metadata is the version
 source of truth; docs and artifacts derive from or are checked against it; the release gate
@@ -101,7 +104,12 @@ Ceres is standing memory, not write-only storage. Authorization to use it is sta
   calling a producer broken, check its consumers.
 - Say "my probe did not find X", not "X does not exist", unless the negative-claim gate is met.
 - Write (`save_decision`/`remember`) in the same turn as the work it describes.
-- Unreachable after loading → `CERES UNAVAILABLE`; route writes to the durable intake queue; label memory-derived claims `UNVERIFIED`.
+- Unreachable after loading → `CERES UNAVAILABLE`. **Local session** (JP's Mac): route writes to the
+  durable intake queue; label memory-derived claims `UNVERIFIED`. **Cloud session** (claude.ai/code
+  web, any remote container — anything not running on JP's Mac) → **STOP**: no edits, commits,
+  pushes, PRs, merges, tracker transitions or other writes. Report the outage to JP (what was
+  probed, exact error) and hold until the connector is restored and a preflight succeeds. Reads
+  needed to diagnose the outage are allowed. (JP, 2026-10-19; CHG-2026-10-19-006.)
 - This file is the bootstrap law; never store the instruction to use Ceres only inside Ceres.
 
 ### 2c. CERES SESSION RECEIPT — PROVE THE LOOP
@@ -109,6 +117,7 @@ Ceres is standing memory, not write-only storage. Authorization to use it is sta
 Every Ceres-capable session, every client (Codex, Claude, ChatGPT, Devin, Gemini, Ollama/Open
 WebUI, VS Code…). **No session type is exempt** — "not substantive enough" is not a skip reason.
 1. **Preflight** before the first substantive answer: `agent_preflight` / `ceres agent preflight`.
+   A cloud session whose preflight fails is in §2b's cloud STOP until a retry succeeds.
    Receipt: agent, client, namespace, health, context snapshot, scoped query, search count, SHA-256.
    Report `session_id` + `receipt_sha256`.
 2. **Work** per §2b and §4.
@@ -172,8 +181,12 @@ purpose is a button-press is theater. This is a **norm, not a mechanical control
 hook checks authorization, and a self-written `PUSH-APPROVED` token is theater. Believe a guard
 stopped you? Name it and quote its output; if you can't, you weren't gated.
 
-Still escalate real irreversibility: history rewrite, force-push, branch/tag deletion, secret
-rotation, production data, DNS.
+Still escalate real irreversibility: history rewrite, force-push, tag deletion, deleting an
+unmerged branch, secret rotation, production data, DNS. Merging in-SOW work and deleting its
+branch after the merge are not escalated (`git-workflow.md`, auto-merge ruling). A repo ruleset
+or CODEOWNERS rule that requires JP's review (sentinel since 2026-10-19) is a gate JP chose, not
+an escalation: request his review, report "awaiting the ruleset's code-owner review", merge as
+soon as it lands, and never bypass it.
 
 ---
 

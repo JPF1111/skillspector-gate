@@ -44,10 +44,15 @@ and got it wrong twice on 2026-08-31 before JP corrected it by hand.
 Both repos and the workspace file live in that one directory; the earlier sibling locations
 (`~/dev/code/mylo-documentation-hub`, `~/dev/code/legacy-systems-research`) no longer exist
 on disk — verified 2026-09-23 — and are listed under DEAD PATHS below. The Ceres side of the
-same correction is a `codex-desktop` proposal (`MYLO canonical local path correction`, queue
+same correction was a `codex-desktop` proposal (`MYLO canonical local path correction`, queue
 `472295e8-28f1-4174-badc-43ad87ef01a1`, proposal `c39b3a29-fba3-4a7b-87f0-bc8bfb3d92d1`,
-namespace `mylo`, target `ceres://mylo/project-spine`) that lands through owner ratification,
-not through this file.
+namespace `mylo`, target `ceres://mylo/project-spine`), which JP ratified on 2026-09-23 but the
+queue drain then rejected (`ObsidianKeeperError`: a `ceres://…/project-spine` target is not a
+Markdown note; [sentinel-memory-os#191](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/issues/191)).
+The envelope is sealed in Ceres's `rejected-archive/2026-Q3` and must not be replayed. Its intent
+landed on 2026-09-24 by another route: the project spine, as mylo decision item
+`canonical-local-workspace` (Ceres project-spine item `b2284a43-ed49-4dd0-a42e-a7a0e6f0c964`, with
+`origin_queue_id` 472295e8 in its metadata; a Ceres record, with no web link).
 
 **`legacy-systems-research` IS a MYLO repo** despite the name — it is the clean-room
 research hub for legacy health plan platforms (QNXT and adjacent payer systems). Its
@@ -104,6 +109,59 @@ to be guessed at.
 
 Earlier `Session Statistics Closeout — …` notes stay at the vault root as audit trail (D-086);
 new close-outs go to `Session Closeouts/`.
+
+## Worktree lock registry and gate (recorded 2026-10-19, CHG-2026-10-19-007, git-workflow.md "Worktree lock" and "Worktree gate")
+
+| Thing | Path |
+|---|---|
+| Lock registry directory (`worktree_lock_dir`, the Ceres setting, on sentinel-memory-os main through #438 and unreleased; gitignored, local to this machine) | `~/dev/sentinel/logs/worktree-locks/` |
+| One live-lock file per worktree (read by the guard hook, the daily report and Ceres' status report; carries `work_item`, `work_namespace`, `work_item_verified` when a claim named a work item) | `~/dev/sentinel/logs/worktree-locks/latest-<slug>.json` |
+| Append-only lock ledger | `~/dev/sentinel/logs/worktree-locks/locks.jsonl` |
+| Gate event log, append-only, one JSON object per line. The `worktree.unverified` events are written here: a claim or a `git worktree add` that named a work item passed WITHOUT a Ceres check because Ceres could not be asked. No spool or event directory existed for this, so it lives in the lock directory | `~/dev/sentinel/logs/worktree-locks/events.jsonl` |
+| Cross-machine marker record per worktree; daily drift report | `~/dev/sentinel/logs/worktree-locks/marker-<slug>.json` · `report-<date>.md` |
+| Worktree gate mode switch (`warn` or `require`; the only place the phased rollout is set) | `~/dev/sentinel/governance/rules/worktree-gate-mode.txt` |
+| Gate logic shared by the lock tool, the guard hook and the report | `~/dev/sentinel/bin/worktree_gate.py` |
+
+## Ceres work-item feeds (recorded 2026-10-24, CHG-2026-10-24-001, Ceres Remarkable P4 S5/S6)
+
+Two directories carry records into Ceres work items (`ceres work`). Each row names who writes the
+directory and who reads it, so neither side guesses a path.
+
+| Thing | Path |
+|---|---|
+| **Watcher attention directory** (the `ceres` profile of `ceres-issue-watch`): one `<key>.attention` file per open item that needs a person, as `key=value` lines (`key`, `kind`, `issue`, `pr`, `opened_at`, `opened_epoch`, `summary`); the watcher removes the file when the cause clears. Local to this machine, gitignored under `logs/`; present and empty when checked on 2026-10-24. **Producer:** [`bin/ceres-issue-watch.sh`](https://github.com/FinTechGlobalSolutions/sentinel/blob/e97a056/bin/ceres-issue-watch.sh), function `attention_open()` (writes the file with `record_set`, line 1109; `ATTN_DIR` is set at line 326; line 138, which the P4 brief named, is the header comment that documents the format, not the writing code). **Consumer:** `ceres work ingest attention`, which reads the directory named by `CERES_ATTENTION_DIR` (Ceres setting `attention_dir`, default this path) and never writes it; `bin/sentinel-service` runs it every 5 minutes, only while the mode file below says `on`, through [`bin/ceres-attention-ingest.sh`](https://github.com/FinTechGlobalSolutions/sentinel/blob/e97a056/bin/ceres-attention-ingest.sh) | `~/dev/sentinel/logs/ceres-issue-watch/attention` |
+| **Attention-ingest job switch.** First word `on` runs the job; anything else, or no file, is off. Ships `off`; turning it on is a reviewed commit. The environment cannot turn it on | `~/dev/sentinel/governance/rules/attention-ingest-mode.txt` |
+| **Attention-ingest job state** (written by `bin/ceres-attention-ingest.sh`, gitignored, local to this machine): last run's status JSON; the state file (last good fingerprint, failure back-off count, any orphaned session still to be closed out); the in-progress lock directory | `~/dev/sentinel/logs/service/ceres-attention-ingest.json` · `ceres-attention-ingest.state` · `ceres-attention-ingest.lock/` |
+| **Ceres work-capture spool**, landing with Ceres P4 S5 (**not merged yet; the directory does not exist on this machine as of 2026-10-24**, Ceres creates it). **Producer:** `ceres work capture`, the hook entry point, which fails open into this spool when it cannot write the item inside its time budget. **Consumer:** `ceres work capture --drain` | `~/.local/state/ceres/work-capture-spool/` |
+
+**Not covered by the first row.** The watcher's `sentinel` profile writes to
+`~/dev/sentinel/logs/ceres-issue-watch/sentinel/attention` (`P_STATE_DIR` for that profile in
+`bin/ceres-issue-watch.sh`); that directory does not exist on this machine, so the profile has not run
+here. Ceres ingests only its configured `attention_dir`, and a write run refuses any other directory, so
+nothing ingests the sentinel profile's items today. Not fixed here: it needs a second ingest
+configuration or a Ceres change.
+
+## Ceres owner passkey pin (recorded 2026-11-01, CHG-2026-11-03-003, Ceres Remarkable P5 S2)
+
+One root-owned file outside the home directory, which is why it has its own row: `/etc` is root-owned,
+and no earlier entry fit a path a user-level process cannot write. Ceres PR
+[#539](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/pull/539) (merged as `2bfbbc2`) documents it; the
+facts below are from that commit's
+[`owner-authority.md`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/2bfbbc23fbec05ab826c219b58dc535c23936369/docs/security/owner-authority.md)
+("The credential pin") and
+[`webauthn_pin.py`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/2bfbbc23fbec05ab826c219b58dc535c23936369/src/ceres_sentinel/webauthn_pin.py#L51)
+(`PIN_FILE`, line 51).
+
+| Thing | Path / value |
+|---|---|
+| **Owner passkey pin file** | `/etc/ceres/owner-passkey.pin` |
+| Owner and mode | file `root:wheel`, mode `0644`; directory `/etc/ceres` `root:wheel`, mode `0755` (root-owned, not group- or world-writable). Ceres refuses the pin if the file or any directory above it is not root-owned or is group- or world-writable, or if the file is not a regular file |
+| Content | One line of JSON: schema `ceres-owner-passkey-pin-v1`, the credential id, and `sha256:` of the credential's COSE public key (the public-key fingerprint of the enrolled owner passkey). No secret |
+| **Writer** | Only the single `sudo` command that `ceres owner webauthn-enrollment-verify` prints, after the owner types the owner code and one randomly chosen group of the key fingerprint. It is run by JP. **Never written by an agent**, and Ceres itself never writes it |
+| **Readers** | Ceres, at a ceremony's start, at assertion verify, and at every closeout that relies on an approval. **Fails closed**: a missing file means no passkey is enrolled, and Ceres never falls back to the credential store |
+| Moving it | Not possible: the path is hard-coded, with no setting, environment variable or command that relaxes it. Do not create, edit or move it by hand |
+| Status | `ceres owner webauthn-status` (read-only, no code): `ready: true`, exit 0 only when the enrolled credential is the pinned one. Present in the installed Ceres v0.5.91 (probed 2026-11-03: it returns `ready: false`, `state: no_credential`, so no credential is enrolled yet; it answered "No such command" on v0.5.88 on 2026-11-01) |
+| **This machine, 2026-11-01** | **Not present.** `ls -ld /etc/ceres /etc/ceres/owner-passkey.pin` answered "No such file or directory" for both; no passkey is enrolled. This row records the path, it does not create it |
 
 ## Fabric pattern library (added 2026-10-06, CHG-2026-10-06-004)
 
@@ -173,7 +231,7 @@ Ruled on rather than left ambiguous:
   `bin/govcheck`, and by `bin/govland` as of `CHG-2026-09-21-003`). If this repo ever gets a
   real default branch, lift the exemption and let it be governed like its peers.
 
-- ⛔ **`~/dev/code/YABA`** — EXEMPT (**ruled 2026-09-28: JP — "exempt YABA"**). A clone of
+- ⛔ **`~/dev/code/external/YABA`** — EXEMPT (**ruled 2026-09-28: JP — "exempt YABA"**). A clone of
   `github.com/Subfly/YABA`, someone else's project; GitHub answered 403 to the push, so nothing
   reached that repo (no PR, branch or marker ref of ours exists there — checked). Before the
   exemption `govsync` had written into the working tree: it prepended `@AGENTS.md` to the tracked
@@ -186,8 +244,13 @@ Ruled on rather than left ambiguous:
   the list in `bin/gov-owned-accounts.txt`; `govsync`, `govcheck` and `govland` all ask
   `gov_exemption()` in `bin/gov-exempt-repos.sh`, so a repo that is not JP's is not written into,
   landed into or reported as drift (`govcheck` prints `exempt`). On disk on 2026-09-28:
-  `~/dev/code/headroom` (`headroomlabs-ai/headroom`) and `~/dev/code/ruflo` (`ruvnet/ruflo`), plus
-  YABA above. `headroom` had the same damage as YABA — its tracked `.github/copilot-instructions.md`
+  `~/dev/code/external/headroom` (`headroomlabs-ai/headroom`) and `~/dev/code/external/ruflo` (`ruvnet/ruflo`), plus
+  YABA above. **Moved 2026-10-23 (JP: "move any repo which is not my own to a subfolder in /dev/code")**
+  into `~/dev/code/external/`, with `~/dev/code/external/OGAD` (`off-grid-ai/OGAD`), `~/dev/code/external/rea`
+  (`morluto/rea`), `~/dev/code/external/taste-skill` (`Leonxlnx/taste-skill`, moved from under `mcp/`) and
+  `~/dev/code/external/diagram-design` (`cathrynlavery/diagram-design`, cloned that day) added to the set. Every one of these has its push URL set to `DISABLED`, so `git push` fails at the
+  remote layer, and no PR is opened from them. Pull is the only sync: a local reference copy, never
+  merged back to the original repo. `headroom` had the same damage as YABA — its tracked `.github/copilot-instructions.md`
   (upstream's own Copilot review policy) had been replaced by a symlink — and was restored the same
   day. `ruflo` was never written to: `govsync` refused its hand-authored `AGENTS.md`. `QuorumBooks`
   is on the owned list as the automation account whose credentials live in JP's keyring
@@ -205,7 +268,7 @@ Ruled on rather than left ambiguous:
   and 2026-09-07 is UNVERIFIED). Encoded as a name-based skip in `bin/gov-exempt-repos.sh`'s
   `EXEMPT_REPOS` (sourced by both `bin/govsync` and `bin/govcheck`).
 
-- ⛔ **[`~/dev/code/everything-claude-code`](file:///Users/jpfinley/dev/code/everything-claude-code)**
+- ⛔ **[`~/dev/code/external/everything-claude-code`](file:///Users/jpfinley/dev/code/external/everything-claude-code)**
   — EXEMPT (**ruled 2026-09-21: JP approved** — approved explicitly at 2026-09-21T13:28Z via the
   [Specula tracker board](https://claude.ai/artifact/2Wi2ufnbFwj4uUdjjxRjQP) (private artifact),
   relayed by the orchestrator. The ruling itself is recorded in Ceres as memory
@@ -249,13 +312,49 @@ Ruled on rather than left ambiguous:
   2026-10-04) stays; no further mirror is written, landed or reported as drift. Encoded as a name-based skip in
   `bin/gov-exempt-repos.sh`'s `EXEMPT_REPOS` (`CHG-2026-10-04-001`).
 
-- ⛔ **`~/dev/code/NGM6Update`** — EXEMPT (**ruled 2026-10-04: JP, live in chat — "the netgear one"
+- ⛔ **`~/dev/code/external/NGM6Update`** — EXEMPT (**ruled 2026-10-04: JP, live in chat — "the netgear one"
   should be ignored**). A fork of the Nighthawk M5 restore utility for the M6 series,
   `origin` = [`FinTechGlobalSolutions/NGM6Update`](https://github.com/FinTechGlobalSolutions/NGM6Update); not
   a venture repo. Its remote already holds an unmerged `chore/governance-sync-680c1a1` branch from an
   earlier landing attempt (one commit, generated files only); it was left in place, not deleted (branch
-  deletion is a JP call). `~/dev/code/netgear` is not a git repository and was never governed. Encoded as a
+  deletion is a JP call). `~/dev/code/external/netgear` is not a git repository and was never governed. Encoded as a
   name-based skip in `bin/gov-exempt-repos.sh`'s `EXEMPT_REPOS` (`CHG-2026-10-04-001`).
+
+## Pons — remote MCP access for cloud sessions (recorded 2026-10-19, CHG-2026-10-19-004)
+
+JP approved ("Yes go on this plan", "also read/write", 2026-10-19) giving claude.ai/code web sessions read/write
+access to Ceres and the Obsidian vault through Cloudflare. Outbound-only: no inbound port is opened.
+
+| Thing | Value |
+|---|---|
+| Cloudflare tunnel | `Pons`, id `a9f2b9e9-c974-4ec4-99dc-0fab94666205`, account `ba2aaa84c8ce107c2a6c1385adc9b60d` (J P Finleys Account), zone jpfinley.com |
+| Tunnel config | `~/.cloudflared/config.yml` (credentials `~/.cloudflared/<id>.json` and `cert.pem`, mode 600; never commit, never print) |
+| Ceres MCP, remote | `https://ceres.jpfinley.com/mcp` → `http://127.0.0.1:9001` (Streamable HTTP, `ceres mcp --transport streamable-http`; no auth of its own, so Cloudflare Access is its only gate) |
+| Vault MCP, remote | `https://vault.jpfinley.com/mcp` → `http://127.0.0.1:27127` (the Pons vault proxy) → `https://127.0.0.1:27126` (the Semantic Vault MCP; proxy verifies the origin cert against `~/.claude/certs/obsidian-semantic-vault.pem`; Obsidian must be open) |
+| Vault proxy | `~/.pons/vault-proxy.py` (mode 700, stdlib Python, listens 127.0.0.1:27127 only). Replaces the request's `Authorization` with the vault's bearer token from `~/.pons/vault-auth` (mode 600, dir 700; the value is the `obsidian-semantic` entry's header in `~/.claude.json`; never print, copy into the repo, Cloudflare or a connector field) and streams the response back. Added 2026-10-19 (CHG-2026-10-19-005) because the vault's own token and Access's OAuth token both use `Authorization`; origin answered 401 without it. Tunnel config before the change: `~/.cloudflared/config.yml.pre-proxy` |
+| Access | two Self-hosted applications, `Pons - Ceres MCP` and `Pons - Vault MCP`; policy `JP only (email)`, Allow, `j.p.finley@icloud.com`; login by Cloudflare one-time PIN (no identity provider is configured; JP chose this 2026-10-19); Managed OAuth on, redirect URI `https://claude.ai/api/mcp/auth_callback` plus localhost and loopback clients, grant session 2 weeks, access token 15 minutes |
+| LaunchAgent | `com.cloudflare.cloudflared` (`~/Library/LaunchAgents/com.cloudflare.cloudflared.plist`): `cloudflared --no-autoupdate tunnel run Pons`, RunAtLoad, KeepAlive on failure, logs `~/Library/Logs/com.cloudflare.cloudflared.{out,err}.log`. Per-user, so it runs only while JP is logged in. The installer's plist ran a bare `cloudflared`, which exited at once; ProgramArguments were edited to run the tunnel |
+| Proxy LaunchAgent | `com.pons.vault-proxy` (`~/Library/LaunchAgents/com.pons.vault-proxy.plist`): `/opt/homebrew/bin/python3 ~/.pons/vault-proxy.py`, RunAtLoad, KeepAlive, logs `~/Library/Logs/com.pons.vault-proxy.{out,err}.log`. Per-user, same logged-out limit as the tunnel |
+| DNS | proxied CNAMEs `ceres` and `vault` → the tunnel. Apex and `www` are Vercel's and were not touched |
+
+**Status (2026-10-19): gate verified; both connectors authenticated end to end through Access.** Ceres: JP's sign-in worked and a decision write through it succeeded (memory f0940515). Vault: after a retry (first attempt hit "Invalid nonce" on a stale Access sign-in tab), the connector reached the Semantic Vault MCP 0.12.9 through the proxy (`system info` returned). Rejection of other emails is not tested. Unauthenticated requests to both hostnames get `401` from Access. The sanction above is JP's statement in a session transcript that is not openable from this repo.
+
+**Vault auth (2026-10-19, CHG-2026-10-19-005).** The vault MCP has its own bearer token, which Access does not supply; called without it the origin answered 401. JP approved ("go") a local proxy that adds the token. Through the proxy, a local `initialize` returns 200; both public hostnames still return 401 from Access. The token now lives in `~/.pons/vault-auth`; never put it in Cloudflare config, a repo file or a connector field without JP's approval. Proxy necessity was checked 2026-10-19: the origin returns 401 with no token and with a wrong bearer token, and Access's OAuth token is not the vault token, so the proxy stays unless the vault plugin's own auth is changed. To re-test, point the `vault` ingress route back at `https://127.0.0.1:27126` (needs `caPool` and `originServerName: localhost`) and reconnect; a 401 means the proxy is still required. If the proxy is down the vault route returns 502 (fail closed).
+
+**Risk and rules for future agents.** Ceres MCP has no origin auth, so Access is the only thing between the internet and
+read/write Ceres (including its owner tools). A policy edit, a deleted app, or an extra hostname or ingress route for
+`:9001` exposes it. Do not widen the policy, add routes to `config.yml`, or disable Access without a new CHG signed by JP.
+Localhost and loopback redirect URIs let a local client complete OAuth, which was JP's chosen setting (his task
+instruction); it is not a reason to loosen the rest.
+
+**Restore / rollback.** The plist and `config.yml` are machine state, not in this repo. Do not rerun the bare
+`cloudflared service install`: it writes a plist that runs `cloudflared` with no arguments, which exits. Keep
+`ProgramArguments` as above. To roll back: `launchctl bootout gui/$(id -u)/com.pons.vault-proxy` (then delete `~/.pons`) and `launchctl bootout gui/$(id -u)/com.cloudflare.cloudflared`, delete the two DNS
+records, delete the two Access applications, then `cloudflared tunnel delete Pons` (each needs JP's go).
+
+Remote access is unavailable while JP is logged out (per-user agent), despite KeepAlive. Port 9000 is not exposed by Pons.
+
+Not recorded here: the cloud-side connector entries (`claude.ai/customize/connectors`), which are JP's to add.
 
 ## Hard placement constraints (learned, non-negotiable)
 
@@ -334,7 +433,7 @@ its REJECTED-then-adopted reasoning are left intact, not deleted.
 | **Quorum Books — dev** | | | |
 | web (Vite) | 5173 | — | `strictPort: true` — conflict FAILS LOUD, never relocates |
 | admin (Vite) | 5174 | — | `strictPort: true` |
-| api | 3001 | — | |
+| api | 3001 | binds all interfaces as of 2026-11-01 (tsx dev server, not routed by the tunnel) | `lsof -nP -iTCP:3001 -sTCP:LISTEN` on 2026-11-01 showed `node` (`tsx watch src/server.ts`, `packages/api`) on `*:3001`, not `127.0.0.1`. The Cloudflare tunnel routes only `ceres.jpfinley.com` → `127.0.0.1:9001` and `vault.jpfinley.com` → `127.0.0.1:27127` (`~/.cloudflared/config.yml`), so the tunnel does not expose 3001. **Risk:** reachable from the local network, not only from this machine; the macOS application firewall is on and permits incoming connections to the fnm `node` binary (`socketfilterfw --getappblocked`, 2026-11-01). Owner: unassigned, no QB issue yet; JP originates the follow-up to bind the dev server to `127.0.0.1` ([`project-desk.md`](project-desk.md) section 7). Whether it is running is a live check. |
 | marketing site (quorumbooks-web, Astro) | 4321 | — | `strictPort: true` (qbw-11, 2026-09-17) — was previously unpinned/unrecorded, the one repo in the fleet without this discipline; 4321 is Astro's own existing default, pinned in `astro.config.mjs` + `vite.server.strictPort` |
 | cockpit | 5200 / 5201 | — | UI + paired API process |
 | postgres (EDB 18, D-085) | 5432 | — | canonical local Postgres; Docker Postgres is a non-default escape hatch only |
@@ -353,11 +452,16 @@ its REJECTED-then-adopted reasoning are left intact, not deleted.
 | ceres-open-webui | 8080 | 127.0.0.1 only | |
 | ceres-opensearch-dashboards | 5601 | 127.0.0.1 only | |
 | **Other** | | | |
+| Ceres API (`ceres api`, LaunchAgent `io.ceres.memory.api`) | 9000 | 127.0.0.1 only | **Never route it through Pons or Cloudflare** (its boundary is the loopback bind plus the guard below, and the owner passkey ceremony will run on its `localhost` origin). Observed live 2026-10-19 (`lsof`); no row existed. Pid held by the `ceres` uv tool. Whether it is running is a live check. **Request guard since Ceres [v0.5.85](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/releases/tag/v0.5.85)** ([sentinel-memory-os#487](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/issues/487)): a Host allow-list (`localhost`, `127.0.0.1`, `[::1]`, bare or with the served port 9000; anything else, a missing Host or more than one gets `421`, which is what stops DNS rebinding); every unsafe-method request from a cross-site, same-site or foreign Origin is refused (`403`), and a websocket handshake that fails the same rule is closed with code `1008` (the API serves no websocket route today); Swagger UI and ReDoc are served only at `http://127.0.0.1:9000/docs` and `/redoc` (`404` on any other host, so the third-party script they load never shares the `http://localhost:9000` origin). **Served on this same port since Ceres [v0.5.86](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/releases/tag/v0.5.86)** (Ceres Remarkable P6 S2; probed live 2026-11-01 against the installed v0.5.87): the local command center, server-rendered HTML, `GET` only, no script, no form, no cookie, behind the same guard. Pages: `/` (overview), `/cards` (failure cards), `/evidence/<name>` (a saved utility receipt as plain text, by exact file name) and `/favicon.ico` (`204`). Open it as `http://localhost:9000/`. Live: `GET /` and `/cards` answer `200`, `POST /` answers `405`, a cross-site `POST /cards` answers `403`, a foreign `Host` still answers `421`. A page read runs the code of the CLI check it names (maintenance, doctor, version verify); per the [v0.5.87 release notes](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/770fb8d57d02a908bd3ec333bb2f373899602365/docs/getting-started/whats-new-release.md) the maintenance and doctor reads no longer write. Source: [`command_center/pages.py`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/770fb8d57d02a908bd3ec333bb2f373899602365/src/ceres_sentinel/command_center/pages.py#L492) and [`docs/reference/rest-api.md`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/770fb8d57d02a908bd3ec333bb2f373899602365/docs/reference/rest-api.md#local-command-center) at v0.5.87. **Still planned, not served** (`GET /rulings/<id>` returned `404` on 2026-11-01): the owner passkey ceremony page at `/rulings/<id>`, Ceres Remarkable P5 S2. **Rule:** never widen the Host allow-list (no other hostname, no `0.0.0.0` bind, no tunnel route) without a new CHG record; the allow-list is what stops a DNS-rebinding page from reading the API. Guard notes added 2026-10-31 (CHG-2026-10-31-001); command center note corrected 2026-11-01 (CHG-2026-11-03-003); the row itself dates from 2026-10-19. Source: [`api_guard.py`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/820e45b4e7e294bf63cf25c245b465bf46c69839/src/ceres_sentinel/api_guard.py#L54) and [`api_docs.py`](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/820e45b4e7e294bf63cf25c245b465bf46c69839/src/ceres_sentinel/api_docs.py#L159) at v0.5.85. |
+| Ceres MCP (`ceres mcp --transport streamable-http`, LaunchAgent `io.ceres.memory.mcp`) | 9001 | 127.0.0.1 only | Observed live 2026-10-19; no row existed. `POST /mcp` answers an unauthenticated `initialize`: no origin auth. Tunnelled to `ceres.jpfinley.com` by Pons (section above). |
+| Ceres offline manual server (`ceres docs serve`) | 8765 | 127.0.0.1 only | Registered 2026-10-31 (CHG-2026-10-31-001). **On demand, not a service:** `ceres docs serve` (default `--port 8765`, [`cli.py` line 2676](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/820e45b4e7e294bf63cf25c245b465bf46c69839/src/ceres_sentinel/cli.py#L2676); [`serve_documentation()` line 67](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/blob/820e45b4e7e294bf63cf25c245b465bf46c69839/src/ceres_sentinel/documentation.py#L67), at v0.5.85) serves the extracted offline manual as static files with Python's `ThreadingHTTPServer`, bound to the literal `127.0.0.1`, until Control-C. No LaunchAgent names 8765 (`grep` of `~/Library/LaunchAgents/*.plist`, local only, not openable here, 2026-10-31), so the owner process is whichever shell or session ran the command, held by the `ceres` uv tool. No auth, no Host check: it must never bind beyond 127.0.0.1 and must never be routed through Pons or Cloudflare. Not running on 2026-10-31 (`lsof -nP -iTCP:8765 -sTCP:LISTEN` returned nothing), so this row reserves the port and does not imply a listener; whether it is running is a live check. The CLI accepts another `--port` (1024 to 65535); check this table for a collision first, and register the port if the server becomes standing. |
 | Obsidian Local REST API | 27124 | — | |
 | Obsidian Semantic Notes Vault MCP (`semantic-vault-mcp` plugin) | 27126 (HTTPS) | 127.0.0.1 only | Registered 2026-10-06 (CHG-2026-10-06-008, -009). HTTPS only: with HTTPS on, the plugin serves HTTPS alone, so its HTTP setting (27125) is inert — 27125 stays reserved to this plugin, not free. Plugin defaults (HTTP 3001, HTTPS 3443) are not used; 3001 is the Quorum Books api. Claude Code user-scope MCP entry `obsidian-semantic` → `https://127.0.0.1:27126/mcp`; the plugin's self-signed cert is trusted via `NODE_EXTRA_CA_CERTS` = `~/.claude/certs/obsidian-semantic-vault.pem` in `~/.claude/settings.json` (cert expires 2027-10-07; re-export it if the plugin regenerates it). Separate from the `obsidian` entry (Local REST API, 27124). |
+| Pons vault proxy (`~/.pons/vault-proxy.py`, LaunchAgent `com.pons.vault-proxy`) | 27127 | 127.0.0.1 only | Registered 2026-10-19 (CHG-2026-10-19-005). Adds the vault bearer token and forwards to 27126; the tunnel's `vault.jpfinley.com` route points here. |
 | Obsidian Task Genius MCP (`obsidian-task-progress-bar` plugin, Task Genius) | 7777 | 127.0.0.1 only | Registered 2026-10-06 (CHG-2026-10-06-010); in use before it was recorded. Bearer-token auth (unauthenticated request → 401). Claude Code MCP entry `prosperity-springs-tasks`. |
 | MLX LM server (`mlx_lm.server`, OpenAI-compatible) | 8082 | 127.0.0.1 only | Registered 2026-10-16 (CHG-2026-10-16-001). LaunchAgent `com.jpfinley.mlx-lm-serve` (wrapper `~/.local/bin/mlx-lm-serve`, logs `~/.local/state/mlx-lm-serve/`), venv `~/.venvs/mlx-lm` (Python 3.12, `mlx-lm` 0.32.2), model `mlx-community/Meta-Llama-3.1-8B-Instruct-abliterated-4bit` from the Hugging Face cache. No auth: it must never bind beyond 127.0.0.1. 8082 was verified free on 2026-10-16 (`lsof -nP -iTCP:8082 -sTCP:LISTEN` returned nothing); 8080 (`ceres-open-webui`) and 8081 were both held. Finding the same day, recorded here because [sentinel#146](https://github.com/FinTechGlobalSolutions/sentinel/pull/146) removes the 8081 row: 8081 was held by the native Open WebUI desktop app (`~/Library/Application Support/open-webui`, `open-webui serve --port 8081`), outside Ceres; this row does not change it. Whether the server is running is a live check (`launchctl print gui/$(id -u)/com.jpfinley.mlx-lm-serve`, `lsof -i :8082`), never implied by this row. |
 | Fabric REST API (`fabric-ai --serveOllama`) — **reserved** | 8090 | 127.0.0.1 only | For LaunchAgent `com.jpfinley.fabric-serve` (wrapper `~/.local/bin/fabric-serve`, key from Keychain `fabric-serve`/`api-key`). Reserved 2026-10-06 (CHG-2026-10-06-004); whether it is running is a live check (`launchctl print`, `lsof -i :8090`), never implied by this row. 8080 is `ceres-open-webui`. |
+| Obsidian Html Server (Obsidian community plugin `html-server` "Html Server" 1.0.8 by Pr0dt0s, in the Prosperity Springs vault) | 8420 | 127.0.0.1 only | Registered 2026-11-02 (CHG-2026-11-02-001) on JP's instruction: "register 8420 in the port table as Obsidian Html Server". **Owner: JP.** Runs inside Obsidian: the plugin's `startOnLoad` is on, so it listens whenever Obsidian is open with community plugins enabled. It is not a LaunchAgent, so whether it is running is a live check (`lsof -nP -iTCP:8420 -sTCP:LISTEN`, owner `Obsidian`), never implied by this row. Settings live in the vault's `.obsidian/plugins/html-server/data.json` (`port`, `hostname`, `useSimpleAuth`). **Bind:** the plugin's default `hostname` is `0.0.0.0` (its manifest: "access your vault via a web browser from any device in your network"); it was set to `127.0.0.1` on 2026-11-03 and must stay there. It must never bind beyond 127.0.0.1 and must never be routed through Pons or Cloudflare. **No Host check:** a request with `Host: evil.example` got `200` on 2026-11-03, so a DNS-rebinding page can reach it; the plugin's simple auth (`useSimpleAuth`, on) is the only gate and must stay on. 8420 was verified free on 2026-11-02 against both this table (no row named 8420) and `lsof -nP -iTCP -sTCP:LISTEN` (nothing on 8420). The same day a hand-run `python3 -m http.server 8420 --bind 127.0.0.1`, started from `~/dev/code`, held the port and kept the plugin from binding; it was stopped on 2026-11-03 at JP's choice. Do not run another server on 8420. |
 
 General rules that apply to every row above: Vite-family services run `strictPort: true` — a
 port conflict must FAIL LOUDLY, never silently relocate. Every datastore above (QB and Ceres

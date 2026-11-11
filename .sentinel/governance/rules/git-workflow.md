@@ -47,8 +47,12 @@ by this rule, now and for every future repo unless explicitly exempted the way t
 - **Session/task end-state is always clean:** `git status` clean, no stray local branches
   beyond the one currently in flight, no local worktrees for finished work, no open PRs
   left without either a merge or a stated reason for staying open (e.g. genuinely blocked
-  and escalated). This is not a one-time cleanup — it is the default condition a repo
-  should be in after every session that touches it.
+  and escalated — never "awaiting JP's merge approval" for in-SOW work; see the auto-merge
+  ruling under Push / PR). A repo ruleset or CODEOWNERS rule that requires JP's review
+  (sentinel since 2026-10-19, CHG-2026-10-18-005) is a gate JP chose, not an escalation: such a
+  PR is reported as "awaiting the ruleset's code-owner review" and merged as soon as it lands
+  (see the auto-merge ruling's limits). This is not a one-time cleanup — it is the default
+  condition a repo should be in after every session that touches it.
 - **This does not relax §5 (money/legal/member-rights) or the push-authority rules below.**
   A PR still needs verified-green gates before merge; "keep it clean" is never grounds to
   merge something that hasn't actually passed.
@@ -90,17 +94,25 @@ shared-working-tree collision class is eliminated structurally, not by disciplin
   Either create it under a registered root, or register the new root in `worktree-roots.txt`
   (a sentinel PR) before or together with its first use.
 
-  **Known gaps, tracked in [#118](https://github.com/FinTechGlobalSolutions/sentinel/issues/118).**
-  Until #118 lands, control 2 is only partly in force:
-  - Both reports find worktrees by scanning registered roots rather than by asking git.
-  - The open-work report does not yet see linked worktrees at all. It does see uncommitted work
-    in each primary checkout it lists, Distyll and vigilum included.
+  **How control 2 finds worktrees (since #118, [issue](https://github.com/FinTechGlobalSolutions/sentinel/issues/118)).**
+  Both reports ask git, not a directory list: `git worktree list --porcelain` for every repo
+  `bin/gov-repos.sh` names (the set govsync governs) and every repo in `open-work-roots.txt`
+  (`bin/worktree_discover.py`). A worktree created in a fresh directory is covered with no roots
+  file edited, and each one is classified: unclaimed, dirty, unpushed or unmerged, prunable.
+  `worktree-roots.txt` is now only the net for directories git does NOT know (a subagent's
+  `agent-*` leftover, a worktree whose metadata was pruned): the lock report calls those
+  `ORPHAN-DIR`, "possible orphaned work, not a worktree: inspect and salvage", and gives them no
+  claim-and-remove remedy. A checkout of a repo git knows, at a path git does not list, is
+  `LISTED-ELSEWHERE`: a moved worktree (repair it from there; its old path's `PRUNABLE` says "moved",
+  never "prune") or a copy (run no git in it; salvage). Directories are compared by device and inode,
+  so a path that differs only in case is the same directory. Still open:
   - The closeout guard is no general backstop. It checks only the checkout the closing session
     is standing in, and only for repos with a remote. It does not see a subagent's worktree, any
-    other worktree, or Distyll and vigilum.
-
-  #118 changes both reports to list worktrees with `git worktree list` for every governed repo,
-  so a worktree is covered wherever it lives without anyone editing a roots file.
+    other worktree, or Distyll and vigilum. The discovery is now a reusable helper
+    (`worktree_discover.py claims <session-id>` lists the worktrees a session holds locks on);
+    wiring it into `bin/hook-closeout-guard.py` is follow-up.
+  - A claim made without `--session-id` takes `CLAUDE_CODE_SESSION_ID` from the environment; a
+    shell with neither still records an ownerless lock.
 
   Tooling must resolve a destructive command's target from its explicit operands, so a worktree
   nested inside its primary checkout is never mistaken for that checkout. A command that sweeps
@@ -258,8 +270,10 @@ pattern.
   hook wired machine-wide via `~/.claude/settings.json` and in the sentinel repo. Blocks
   (exit 2) destructive commands — `git worktree remove`, `git branch -d/-D`, recursive
   `rm` — whose target resolves to a worktree locked by a *different* session. The owner is
-  never blocked; unlocked trees are never blocked; unresolvable `rm` targets warn-don't-block
-  (a false-positiving guard gets unwired, which is worse than the gap). Fails open.
+  never blocked; unlocked trees are never blocked. Unresolvable targets are conservatively
+  blocked only when the command runs inside the locked worktree; otherwise the parser allows
+  them. Malformed lock records are skipped with an explicit warning. The guard fails open on
+  internal errors.
 - Daily audit: `bin/worktree-lock-report.sh` (LaunchAgent
   `com.sentinel.worktree-lock-report`, 07:17) scans the roots in
   `governance/rules/worktree-roots.txt` and flags **LOCK-ORPHAN** (live lock, tree gone =
@@ -290,10 +304,15 @@ project, no hook is edited or disabled, and no other push is affected).**
   the marker this machine pushed. `claim` adopts, and `release` deletes, only a ref that still
   points at that SHA. The record holds one entry per branch the worktree has claimed; an entry is
   written just before the push and removed only when that marker is known to be gone; `release`
-  removes every marker on record for the worktree. A marker with no entry is deleted by name in
-  one case only: it points at a commit of this repository that has files in it, which is what
-  the tool pushed (the branch `HEAD`) before 2026-09-28. Nothing else is touched
-  (CHG-2026-09-29-003).
+  removes every marker on record for the worktree. **A marker with no entry is never deleted, by
+  name or otherwise** (QB-610, CHG-2026-10-23-001; JP's ruling of 2026-10-09 that he never wants a
+  "wip" deleted out from under a session, as relayed in the task brief; the authoring session did
+  not read it first-hand). A lock with nothing on record leaves origin untouched: `release` makes no call
+  to origin for it, and (where origin is JP's) prints the ref it left in place and the
+  `git ls-remote origin <ref>` command that shows it. Removing such a marker is JP's call; no agent deletes a `refs/wip-locks/*` ref by
+  hand. (CHG-2026-09-29-003 had kept one deletion by name, for a commit of this repository with
+  files in it, the old-style marker. It could not tell whose marker it was, and could delete
+  another machine's. It is gone.)
 - **A claim is all or nothing.** Order: marker, Ceres record, local registry. If a later step fails
   the marker is taken back; if it cannot be taken back, re-running the same claim adopts it.
   `release` and `takeover` change nothing, locally or on origin, unless the Ceres record was
@@ -303,20 +322,19 @@ project, no hook is edited or disabled, and no other push is affected).**
 - **Limits:** a marker push typed by hand runs the hook like any other push. A `release` whose
   delete fails still releases locally and leaves a stale marker: the next claim of that worktree
   from the same machine adopts it, every other claim of that branch name is refused until it is
-  removed; running the same release again retries. A lock claimed before 2026-09-28 has nothing
-  on record, and a re-claim by its owner is refused by its own marker until the lock is released
-  and claimed again. The deletion by name applies to any lock with nothing on record for its
-  branch, and it cannot tell whose old-style marker it is: one pushed by another machine that
-  still runs the tool as it was before 2026-09-28 is deleted too, when its commit is in this
-  repository. An old-style marker whose commit is no longer in this repository, and a marker
-  whose record was lost, are left on origin. No marker is used when `origin` does not fetch from
-  and push to one and the same repository; a claim or release made in that state leaves the
-  record as it is. The check that a marker is this machine's and its deletion are two calls, not
-  one. A release made after `git worktree remove` reaches origin through the repository named
-  in the record; a lock with nothing on record, or whose record was written before
-  CHG-2026-09-29-003 and names no repository, cannot: release before removing the worktree. The
-  record is kept per worktree name: two worktrees of the same name in different repositories
-  share one.
+  removed; running the same release again retries. **A lock claimed before 2026-09-28 has nothing
+  on record, so its marker stays on origin when the lock is released, until JP removes it**: the
+  old-style marker (the branch's own commit, which is what the tool pushed then) is not deleted
+  by name any more (QB-610). Until it is removed, a re-claim by that lock's owner is refused by
+  its own marker, and so is every claim of that branch name. The same holds for a marker whose
+  record was lost. The price of never deleting what this machine did not record is that these
+  pile up; the gain is that no release can take another machine's marker. No marker is used when
+  `origin` does not fetch from and push to one and the same repository; a claim or release made in
+  that state leaves the record as it is. The check that a marker is this machine's and its
+  deletion are two calls, not one. A release made after `git worktree remove` reaches origin
+  through the repository named in the record; a record written before CHG-2026-09-29-003 names
+  no repository and cannot: release before removing the worktree. The record is kept per
+  worktree name: two worktrees of the same name in different repositories share one.
 
 **Honest limits, stated so no one mistakes this for a wall:** the hook binds Claude Code
 sessions only — Codex, Aider, or a bare shell are bound *normatively* by this rule and
@@ -331,6 +349,88 @@ exit 0; foreign `release` refused; `takeover` attributed), and the report's firs
 found real drift — both then-existing QB worktrees (`CC082226-quorumbooks-app-pd-pointer`,
 `CC082526-qb10-ws6-templates`) running unregistered.
 
+## Worktree gate — a worktree exists for a work item (P4 slice S4, CHG-2026-10-19-007)
+
+Design: Ceres P4 (durable work items), chunk 4. A worktree may exist for a Ceres work item only when
+`ceres work check-worktree <item> --session-id <Ceres session>` allows it: the item is assigned or
+in_progress, it is a code item, it has no hold, the claimant's agent is its assignee, and in quorumbooks its
+`jira:QB-<n>` ref is attached. Ceres decides; sentinel asks (`bin/worktree_gate.py`).
+
+1. **Claim with the item.** `worktree-lock.sh claim ... --work-item <item id> --ceres-session <your
+   preflighted Ceres session id> [--work-namespace <ns>]` runs the check and refuses the claim, recording
+   nothing and pushing no marker, when Ceres says no; the failed condition is printed. `--ceres-session` is the
+   `agent_preflight` session, not `--session-id`: that stays the Claude Code hook id the guard matches on
+   (`CERES_SESSION_ID` in the environment stands in for the flag). The lock file (`latest-<slug>.json`) and
+   its ledger line then carry `work_item`, `work_namespace` and `work_item_verified`, and the Ceres queue record
+   carries `work_item`.
+2. **Phased rollout: `warn` by default.** Today no work items exist and no agent claims with one, so a
+   claim or a `git worktree add` that names NO work item only warns. The mode is the first word of
+   `governance/rules/worktree-gate-mode.txt` (`warn` | `require`). The file decides; the environment can only
+   raise it to `require` (`WORKTREE_GATE_MODE=require`), and any other value there is ignored, so a session cannot
+   switch the gate off. **To turn the refusal on, change that word to `require` in a reviewed commit.** The switch
+   governs only a MISSING item: an item that is named and fails its check is refused in both modes.
+3. **The create guard** (`bin/hook-worktree-guard.py`, the existing `Bash` hook): a `git worktree add`, and
+   the `EnterWorktree` tool when it creates (a `name`, not a `path`), is read as a creation. No lock can exist
+   for a path that does not exist yet, so the evidence of a work item is the command naming one
+   (`WORKTREE_WORK_ITEM=<id> WORKTREE_CERES_SESSION=<id> git worktree add ...`, or those variables in the hook's
+   environment), checked with `ceres work check-worktree`; or the calling session already holding a live lock that
+   carries a `work_item`. With neither: `warn` prints a warning (hook JSON `systemMessage` plus
+   `additionalContext`; no `permissionDecision`) and `require` blocks (exit 2). A named item that fails is blocked
+   in both modes.
+4. **Ceres unreachable fails open in `warn` mode, never silently.** No `ceres` binary, no answer in time
+   (`WORKTREE_GATE_CHECK_TIMEOUT`, default 15 s, never less than 5; the hook uses at most 10), a database failure, or
+   a CLI without the subcommand: under `warn` the claim or the add goes ahead UNCHECKED, prints a warning, and appends
+   a `worktree.unverified` line to `logs/worktree-locks/events.jsonl` (path registered in `canonical-paths.md`).
+   Under `require` a **claim** whose check is unverified is refused (the event is still written, marked
+   `refused`), so a down Ceres, a missing binary or a short timeout is no way past it; the **create guard** still
+   fails open there, as design chunk 4 has it. An answer from Ceres (exit 3, or exit 1 with a JSON error such as an
+   unknown item) is never a fail-open.
+5. **Backstop: `UNASSIGNED-WORKTREE`** in the daily lock report (`worktree-lock-report.sh`): a live lock with no
+   `work_item`, or whose item (`ceres work show`, read-only) is not assigned/in_progress, is on hold, is not a code
+   item or no longer exists. Under `warn` these are listed in an "Advisory" section, not counted and not notified
+   (every lock claimed before the gate would fire it); under `require` they are findings. An item the report cannot
+   read is a Warning line. In either mode the report also lists, as findings, every `worktree.unverified` and
+   `worktree.guard_error` event of the last 24 hours (`GATE-UNVERIFIED`, `GATE-GUARD-ERROR`) and every live lock claimed
+   with `work_item_verified: false` (`WORK-ITEM-UNVERIFIED`), and counts those locks in its header.
+
+**Not wired by this change (settings are JP's).** To make Claude Code call the create guard for the
+`EnterWorktree` tool, `~/.claude/settings.json` needs a second `PreToolUse` entry with `"matcher":
+"EnterWorktree"` running `$HOME/dev/sentinel/bin/hook-worktree-guard.sh` (the Python already handles that tool
+name). Whether the matcher fires for that tool name is UNVERIFIED.
+
+**Agent isolation (`isolation: "worktree"`): documented as NOT going through `EnterWorktree`; the guard does not
+see it.** Claude Code's hooks reference (`code.claude.com/docs/en/hooks`, read in full 2026-10-19) lists the cases
+in which the `WorktreeCreate` event fires as separate bullets: `claude --worktree`; "Claude creates a worktree during
+a session and switches into it with the `EnterWorktree` tool"; "A subagent uses `isolation: "worktree"`"; a workflow
+agent; a background session; `remote-control` in `worktree` mode. It adds: "When Claude runs `git worktree add`
+through the Bash tool rather than calling `EnterWorktree`, your WorktreeCreate hook doesn't run", and that
+configuring a `WorktreeCreate` hook "replaces that default git behavior". So a subagent's isolated tree is made by
+Claude Code itself, not by an `EnterWorktree` call or a `Bash` command, and neither `PreToolUse` matcher sees it.
+UNVERIFIED by a live run (no agent was spawned, by instruction): this is the documentation's reading, and no local
+transcript showed an `EnterWorktree` call or an `isolation` value to compare. `WorktreeCreate` is not a guard
+point: wiring it makes the hook responsible for creating the tree. Only the claim (item 1) and the report
+(item 5) cover a subagent's tree.
+
+**Limits.**
+- The Desktop app and subagents create their tree before a hook runs; Codex and Open WebUI are bound by this rule only.
+- Agent names are self-declared at preflight, and Ceres compares the item's assignee with that name, so a cooperative
+  agent can preflight as the item's assignee and pass the check
+  ([sentinel-memory-os#433](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/issues/433)).
+- Once a session holds one live lock that carries any `work_item`, its later `git worktree add` calls pass the create
+  guard without naming one.
+- A claim with a made-up item id is refused by Ceres, but one with no item is only warned until `require` is on.
+  `takeover` keeps the lock's `work_item` without re-checking it; a same-session re-claim with no `--work-item` keeps
+  it too.
+- `logs/worktree-locks/events.jsonl` is not rotated. Rotation of the shared logs is a follow-up. The report reads only
+  the last 24 hours of it.
+- Until a claim can be made before the tree exists, `require` makes every unannotated `git worktree add` a block.
+- A guard that fails inside (a missing or broken `worktree_gate.py`) lets the creation through, but says so to the
+  model and JP and writes a `worktree.guard_error` event; the report lists it.
+- Flipping `worktree-gate-mode.txt` changes a rule file. Make the flip in a reviewed commit. Gate receipts
+  (`gate-receipt.sh`, `hook-gate-guard.sh`) fingerprint only `governance/AGENTS.md` and `governance/rules/*.md`, so
+  the `.txt` flip does not by itself void them (probed 2026-10-19); the edits to `git-workflow.md` and
+  `canonical-paths.md` that introduce the gate do, and every session needs a fresh receipt after they land.
+
 ## Closeout guard — mechanical block on lazy/lossy closeout (ratified 2026-08-26)
 
 Every governance control above this line about PR review and merge discipline was
@@ -344,8 +444,15 @@ gate-receipt/custos pattern as everything else in this file.
 - `bin/hook-closeout-guard.sh` (+ `.py`) — a Claude Code `PreToolUse` hook wired machine-wide
   in `~/.claude/settings.json`, matcher `mcp__ceres__agent_closeout`. Before any session's
   closeout call reaches Ceres, it checks the git repo at the hook's `cwd`:
-  1. **Merged and pushed** — `HEAD` must be an ancestor of `origin/<default-branch>`, and
-     every dirty path in the working tree that is **this session's** must be committed. The
+  1. **Merged and pushed** — the work at `HEAD` must have landed in `origin/<default-branch>`
+     (`bin/landed.py`, shared with `bin/worktree-lock-report.sh`; sentinel #114): `HEAD` is an
+     ancestor, **or** its tree equals the default branch's tree, **or** merging `HEAD` into the
+     default branch changes nothing (`git merge-tree --write-tree`: every byte `HEAD` adds is
+     already there), **or** a PR merged *into the default branch* has `headRefOid` equal to `HEAD`
+     and its merge commit is in the default branch — a squash merge is never an ancestor, and this
+     repo squash-merges. A PR merged into another branch (a stacked PR) proves nothing. If
+     `landed.py` is missing, defective or raises, the ancestor-only test decides; an answer it
+     cannot establish blocks, with a warning that says why. And every dirty path in the working tree that is **this session's** must be committed. The
      session's own uncommitted, unpushed or unmerged work blocks closeout; dirt it inherited
      does not (see *Dirty-path attribution* below).
   2. **PR thread disposition** — for PRs the closing session owns (see *Ownership* below),
@@ -436,16 +543,30 @@ gate-receipt/custos pattern as everything else in this file.
   reason), so it is visible after the fact, not prevented. Own work done inside a peer's locked
   worktree is likewise reported as the peer's; attributing a dirty tree path by path is the
   separate dirty-tree work (session `cc-20261007-closeout-guard-dirty-tree-attribution`).
-- Fails OPEN (exit 0) on any internal error (not a git repo, `gh` unauthenticated, network
-  failure) with a warning — reported to the agent as above — this is a tripwire-plus-audit
-  control, not a filesystem permission, same posture as the worktree-lock guard above.
+- Fails OPEN (exit 0) on any internal error (`gh` unauthenticated, network failure, an uncaught
+  exception, the guard process dying) with a warning — reported to the agent as above — this is
+  a tripwire-plus-audit control, not a filesystem permission, same posture as the worktree-lock
+  guard above. The SILENT allows are a cwd that is not a git repo and a repo with no origin:
+  there is nothing to check. Every other skip tells the model the check did not run (sentinel
+  #113 N3): an uncaught exception (caught in `main()`), hook input that is not JSON, a failed
+  check-1 `git status` (an empty listing from a failed status is not a clean tree), and, in the
+  wrapper, a missing guard file, a failed `mktemp` or a guard exit other than 0/2.
+- Check 1 lists untracked files whatever the repo's `status.showUntrackedFiles` says (`-uall`);
+  a session can set it to `no` on its own repo, so honouring it would hide that session's own
+  files (#113 N4). The govsync-output proof accepts only law the sentinel checkout's `HEAD`
+  holds (N1): a law commit counts only if it is an ancestor of `HEAD`, and a rule copy is compared
+  with `HEAD:<source>`, not with the working tree, since govsync copies whatever the working tree
+  holds. `HEAD` includes any unpushed local commit on that checkout. `gh repo view` runs in the
+  judged checkout, and the wrapper's scratch file is `mktemp`'d.
 
 **Dirty-path attribution — a session is blocked for its own dirt, not everyone's (2026-10-07,
 sentinel #110).** The govsync-output rule above excuses one specific, very common kind of
 inherited dirt by *proving its provenance*; this excuses the general case by *attributing it to a
 session*. **The two compose, and neither widens the other:** a dirty path blocks only when it is
 neither proven govsync output nor already dirty when this session started and byte-identical
-since. Provenance proof is the stronger of the two where it applies — it needs no prior
+since (a file over 50 MB, `MAX_HASH_BYTES`, is compared by size, mtime, device and inode instead of
+content, so an in-place edit that preserves all four goes unseen). Provenance proof is the
+stronger of the two where it applies — it needs no prior
 observation, so it also covers sessions older than the snapshot hook and other vendors' sessions
 — but it can only ever recognise govsync's own files. Everything else inherited is this rule's
 job: the untracked `Instruct_BKUP/` directory a parent session created (the 2026-09-16 failure), a
@@ -514,21 +635,28 @@ the event was never logged. Measured 2026-10-09 by parsing every
 attachment of any kind (the other 3 are `hook_non_blocking_error`, on 2026-09-18 / 2.1.267,
 2026-09-24 / 2.1.280 and 2026-09-28 / 2.1.284); **10** carry none. Where it is logged it is
 always **before** the first `tool_use` — by 3.7-290 s for the 20, or 3.5-290 s counting the error
-records. (An earlier version of this text said 8-63 s; that was the range of the 15 `ceres-c*`
-sessions alone, not of the set. The figures drift as sessions are created, so they are stated with
+records. (An earlier version of this text said 8-63 s; that does not reproduce — the `ceres-c*`
+sessions alone give 11.4-63.3 s from 14 records, per the final review of #111 — and was a subset,
+not the set. The figures drift as sessions are created, so they are stated with
 the date and the method rather than as fixed truths.)
 
 **Of the 10 with no record, 9 are one window on 2026-10-07 between 17:23 and 21:17 UTC**, all on
 2.1.289 — a build that also appears among the transcripts that *do* carry it, so this is not a
-version boundary. The tenth is an 11-line transcript (`92464979`, `CC091712-design-tracker`,
-2026-09-19). **Four transcripts before that window lack the exact `hook_success` record**, and
-naming them matters because an earlier version of this text wrongly claimed every session outside
-the window had it: `92464979`, plus the three `hook_non_blocking_error` ones above
-(`45814527`, `92d6a18b`, `890b6c29`).
+version boundary. The tenth is an 11-line metadata-only stub (`92464979`, `CC091712-design-tracker-links`,
+2026-09-19) of a session whose full transcript (`CC091812-mc-real-clerk`) carries the exact record, so
+one session was counted twice. **Three sessions before that window lack the exact `hook_success`
+record**, and naming them matters because an earlier version of this text wrongly claimed every
+session outside the window had it: the three `hook_non_blocking_error` ones above (`45814527`,
+`92d6a18b`, `890b6c29`), each of which did fire SessionStart, with an error. (This correction
+follows the final review of #111. The duplicate, the three error sessions and the 11.4-63.3 s
+range were re-measured on 2026-10-17 in the judge review of #144 and reproduce. The totals above
+are as first measured on 2026-10-09; the same glob cut at that date now gives 34/20/26/8: three
+transcripts have since gained `SessionStart:resume` records, and a 7-line transcript with no
+SessionStart record is now counted.)
 
 What this does establish: when the hook is logged it always precedes the session's first action,
 the gap is never marginal, and the unlogged window is confined to 2.1.289 on one day. What it does
-not establish is why those 10 carry nothing — hook failure and absent logging are both consistent
+not establish is why those 9 sessions carry nothing — hook failure and absent logging are both consistent
 with the data. Either way it fails safe: no snapshot means this check blocks exactly as it did
 before dirty-path attribution existed. Wiring is tracked at
 `governance/claude/tree-snapshot-hooks.json` and merged into `~/.claude/settings.json` by
@@ -557,8 +685,9 @@ surfaced rather than silently swallowed or silently adopted.
 
 **Honest limits, stated so this is not mistaken for proof of authorship:**
 - **Missing evidence never relaxes the gate.** No snapshot means the pre-2026-10-07 behaviour,
-  with identical exit codes — the stderr line naming the reason is new, and on a guest-tree allow
-  stdout differs, so "byte for byte" is true of the verdict and not of the output. A session that
+  with identical exit codes. On a block the stdout is the same and a stderr line naming the
+  reason is new; on an allow the reason also reaches the model as `additionalContext`, so "byte
+  for byte" is true of the verdict and not of the output. A session that
   predates the hook wiring, another vendor's session, or a repo the
   session first dirtied inside a single turn without ever being seen in it all block as before.
   This is deliberate (`AGENTS.md` §7: do not weaken a gate to turn red green) and it is also why
@@ -606,10 +735,22 @@ verifies via `gh pr view` that the PR is actually `MERGED` before it will produc
 it refuses outright if the PR is still open or was closed unmerged. The orchestrator's job is
 therefore not "vouch for this" but "actually merge it, then the tool confirms that for you."
 `--owner`/`--reason`/`--session-id`/`--ttl-minutes` (default 120min) are still required for
-attribution and scope, but they no longer stand in for verification. The guard consumes the
-override exactly once (a second closeout attempt on the same session re-blocks), and logs
-consumption — who authorized it, why, which PR was confirmed merged, and that it was actually
-used — not just that it was issued. `closeout-override.sh status` lists
+attribution and scope, but they no longer stand in for verification. The guard spends the override
+when it lets a blocked closeout through, recording the tool call's `tool_use_id`, so one override buys
+one closeout attempt; the read-check-write runs under a file lock, so of two concurrent calls only one
+can spend it. A PostToolUseFailure hook
+(`hook-closeout-guard.py refund`, wired from `governance/claude/closeout-guard-hooks.json` by
+`bin/install-claude-surfaces.sh`) gives it back only when that very call failed because Ceres
+refused the closeout before closing the session (`MaintenanceCloseoutError`,
+`MaintenanceHoldError`, `INVALID_SESSION`; never `SessionAlreadyClosedError`, never an interrupt,
+never after expiry, at most 3 times), so the retry with a corrected status does not need a second
+override (sentinel #133). Any signal that is missing or unreadable leaves it spent: the worst case is
+a second override, never a reused one. Each consumption and refund is a line in the ledger
+`logs/closeout-overrides/overrides.jsonl` — who authorized it, why, which PR was confirmed merged,
+and that it was actually used — not just that it was issued; the refund hook's decisions are in
+`refund-hook.jsonl`. The session's `latest-<session>.json` is the authoritative state: a refund is
+recorded in the ledger before it is applied, so a failure between the two leaves a `refunded` line
+for an override that is still spent. `closeout-override.sh status` lists
 issued/consumed/expired overrides for audit.
 
 ## Open-work tracker — running count of unpushed/unmerged state (ratified 2026-08-26)
@@ -617,12 +758,14 @@ issued/consumed/expired overrides for audit.
 JP: "Ceres should keep a running count of open work which hasn't been pushed" — so visibility
 into abandoned/lost work doesn't depend on any single session's closeout attempt catching it.
 
-`bin/open-work-report.sh` scans every repo listed in `governance/rules/open-work-roots.txt`
-plus every active worktree under the roots in `worktree-roots.txt` (in practice, primary
-  checkouts only until [#118](https://github.com/FinTechGlobalSolutions/sentinel/issues/118):
-  it does not yet recognize a linked worktree), and for each checks: any
-uncommitted/staged changes, any local commits not yet on `origin/<default-branch>`, and
-whether the current branch (if not the default) is actually merged into it. Two-layer output,
+`bin/open-work-report.sh` scans every repo listed in `governance/rules/open-work-roots.txt` and
+every repo govsync governs, and every worktree git lists for them (`git worktree list`, wherever
+the tree lives; [#118](https://github.com/FinTechGlobalSolutions/sentinel/issues/118)). For each
+it checks: any uncommitted/staged changes, any local commits not yet on a remote, and whether the
+current branch (if not the default) is actually merged into `origin/<default-branch>`. A repo with
+no remote (Distyll, vigilum) is compared with its local default branch instead, and each branch
+never merged into it is reported. A directory under a `worktree-roots.txt` root that git does not
+know is reported as possible orphaned work. Two-layer output,
 same pattern as every other report in this file:
 1. A dated local file, `logs/open-work/report-<date>.md`.
 2. A forced `ceres queue submit` record (type `open_work_snapshot`) — counts and per-repo
@@ -642,12 +785,16 @@ requires — a worktree branch `chore/governance-sync-<commit>`, an explicit-pat
 generated files only, a PR, squash auto-merge on green, then the primary checkout is
 fast-forwarded and the worktree removed (fast-forward for repos with no remote; the two
 `JPF1111` repos are pushed under that identity and the CLI is switched back). `sentinel-service`
-runs it after every `govsync --apply` that wrote anything and reports `landed` / `land_failed`
-in `logs/service/governance-status.json`. First live run: 29 repos in one pass.
+runs it after every `govsync --apply` that wrote anything **and whenever any governed repo holds
+a govsync mirror that is correct on disk but uncommitted** (since 2026-10-17, sentinel#135 — an
+out-of-band `govsync --apply` had left 31 repos in that state for 36h while the service read
+healthy), and reports `landed` / `land_failed` in `logs/service/governance-status.json`. First
+live run: 29 repos in one pass.
 
 **Where to look when a repo did not land (since 2026-10-07).** `governance-status.json` is one
 overwritten cycle and names only the current failures (`land_failed_repos`); the durable record
-is `logs/service/governance-sync-history.jsonl` — one JSON line per cycle carrying the trigger,
+is `logs/service/governance-sync-history.jsonl` — one JSON line per cycle (and one per out-of-band
+`govsync --apply` that wrote something) carrying the trigger,
 the sentinel commit, each repo's outcome and the reason it failed or was exempt, and the cycles
 that never started because the lock was held. The raw per-cycle output lives beside it in
 `logs/service/governance-sync-runs/`. Both are bounded (400 cycles / 40 raw runs per kind), so
@@ -655,6 +802,24 @@ neither is an unbounded write under AGENTS.md §4. Before this, the `.out` files
 at the start of each run and `launchd.out` stamped lines with the time but no date, so a failed
 landing stopped being diagnosable once the next cycle began — which is exactly what defeated the
 2026-10-07 question about the-archives' unlanded 2026-10-04 mirror.
+
+An uncommitted mirror is a finding, not an in-sync repo (since 2026-10-17). `govcheck --all
+--report-uncommitted` prints an `UNCOMMITTED` row for a non-exempt repo whose generated `AGENTS.md`
+or `.sentinel/governance` is modified or untracked; it is not drift and does not change govcheck's
+exit code. The service runs that and, when any repo is uncommitted, runs govland (which walks every
+governed repo with a dirty governance path, not only those), then re-checks: whatever is still
+uncommitted keeps `status` at `drift` and is named in `uncommitted` / `uncommitted_repos` and in the
+history line's `uncommitted` object. A repo whose primary checkout govland could not fast-forward
+after landing (govland prints `primary not fast-forwarded:` with git's reason; a PR still waiting on
+its checks never causes that) also keeps `status` at `drift`, named in `primary_stuck_repos` in the
+status file and the history line: it needs a person. The post-landing govcheck is kept in
+`governance-sync-govcheck-after.out` and archived per run as `postcheck-*.out`. A `govsync --apply` run outside the service leaves its own
+history line (`outcome: "out-of-band-write"`, with the invoker), so it is distinguishable from a
+service cycle instead of simply absent. **Limits:** govland visits every primary with any dirty
+governance path, and `CLAUDE.md` is one of them, so an uncommitted hand edit to `CLAUDE.md` alone is
+enough for govland to visit that repo and revert the edit; the retry adds such passes (sentinel#152). The out-of-band line is
+appended without the service's lock and can be lost if it lands during the service's trim of the
+history file (only once the file exceeds 400 lines).
 
 **Honest limits, stated so this isn't mistaken for airtight:** PR ownership is decided by the
 worktree-lock registry, not by gh (which has no session concept) — see *Ownership* in the
@@ -678,8 +843,9 @@ session's own work must still block passes on both hooks — **except `i2` and `
 the point of the change: own work inside another session's locked worktree did not block before
 it.** The two existing suites
 (`test_hook_closeout_guard_vault.py` 28/28, `test_hook_closeout_guard_attribution.py` 69/69) pass
-unchanged, which is the no-snapshot path proving its verdict and stdout unchanged (stderr gains a
-reason line). Live runs with the real
+unchanged, which is the no-snapshot path proving its verdict and exit code unchanged (on a block
+its stdout too, with one added stderr line; on an allow the reason also reaches
+`additionalContext`). Live runs with the real
 `gh`, the real lock registry and the real snapshot engine, in a fresh clone of this repo whose
 `HEAD` is an ancestor of `origin/main`: two untracked files created *before* the snapshot then a
 closeout → **exit 0** with both named as inherited; the same session then creating one file of its
@@ -722,14 +888,15 @@ Full operator documentation: `docs/session-ledger.md`. Engine: `bin/session-ledg
    `/sow` renames the session itself where the client allows it (Desktop:
    `set_session_title self`); elsewhere the session tells JP the name to set. This is separate
    from, and does not change, the worktree `<AGENT-CODE><MMDDYY>-` convention above.
-4. **`/closeout` is the one audit command, runnable any time, scoped to this session only.** It
+4. **`/closeout` is the one audit command, runnable any time — by the session itself or by JP —
+   scoped to this session only.** It
    inventories the session's own transcript (`session-ledger.py audit` — every request including
    mid-turn messages and anything compaction hid, files written, commit/PR commands, spin-offs),
    classifies each request DONE / OPEN / SPUN-OFF / DROPPED with a probe run at close time
    (§9e), writes the close-out note to the vault folder `Session Closeouts/` (append-or-replace
    one named file, through `vault-guard.sh`), closes the ledger, and records the Ceres receipt.
-   Every OPEN item is offered as a spun-off session — never left only in chat. It is
-   non-terminal. `/closeout archive` runs it and then the archival report below.
+   Every OPEN item is recorded (`spin`, the open-items handoff, the vault note) — never left only
+   in chat. It is non-terminal. `/closeout archive` runs it and then the close-out report below.
 5. **Safety net.** Hooks wired machine-wide from `governance/claude/session-ledger-hooks.json`
    by `bin/install-claude-surfaces.sh`: `UserPromptSubmit` re-injects the SOW and the scope rule
    every turn (or nudges once when no ledger exists); `PreCompact` logs a snapshot; `SessionStart`
@@ -740,9 +907,51 @@ Full operator documentation: `docs/session-ledger.md`. Engine: `bin/session-ledg
 6. **The vault note is the record, not the tracker.** Jira, Project Desk and Ceres records may
    point at it; none replaces it.
 
+**Sessions close themselves out (ratified 2026-10-11).** **Sanctioned by: JP, 2026-10-11, live in
+chat** (session `cc-20261010-cockpit-capture-backlog-register-write`): "[also] remove the
+restriction thats says only i can closeout i never asked for that", then "[with that note] I want
+all sessions closed   out and labeled as such once all their deliverables are completed and
+validated. Any remaining work or work needing performed needs to be recorded. Master closeout
+reports to be completed on everyting too." The rule is JP's. The wording below, and each reading
+marked *(chair's reading)*, are the Strategist chair's (delegated).
+- `/closeout` is model-invocable. Nothing reserves it for JP; the skill no longer carries
+  `disable-model-invocation`.
+- **When a session closes** *(chair's reading: "deliverables" are the SOW's acceptance items)*:
+  every acceptance item is DONE with a close-time probe (§9e) — where they apply, PRs merged with
+  CI completed/success, versions tagged, worktrees removed — and every other request is DONE,
+  SPUN-OFF (recorded with `session-ledger.py spin`) or DROPPED (the turn quoted); nothing OPEN
+  belongs to the SOW. The session then runs `/closeout archive` itself, without waiting to be
+  asked, from a checkout of the repo the work landed in, so the closeout guard checks the right
+  repo (its pull-only primary usually works; unrelated dirt there without a session-start snapshot
+  can block).
+  Its ledger closes and the status board labels it `finished`, within the board limits below.
+- **Remaining work is recorded, never left in chat.** The durable record of each item is the
+  open-items handoff, the vault note, and `session-ledger.py spin --title …`. A session card is a
+  convenience on top: in the desktop app, `start_session` with `own_initiative` for a follow-up the
+  session found, or `offer` for a JP request while JP is present. A session with nothing open says
+  so in the handoff.
+- **Master close-out report** *(chair's reading: JP's term is not defined elsewhere in law)*: the
+  Session Metrics Report below, with its vault statistics note and open-items handoff. It is
+  completed at every `/closeout archive` — a session closing on finished work, or one JP retires
+  (or a backlog sweep he ordered closes) with its remainder recorded — not only when JP archives a
+  session by hand. A session never retires itself to skip validation. Whether JP also means
+  a cross-session roll-up, like `~/dev/closeouts/MASTER-TRACKER_v2.md`, was put to him as an open
+  question on 2026-10-11.
+- A SOW deliverable not yet validated means the session does not close. It finishes the work,
+  hands it off, or records what is outstanding (`session-ledger.py state waiting --reason …` when
+  it waits on something outside the session).
+
 **Honest limits.** The hooks bind Claude Code only; Codex, claude.ai and Cowork follow this rule
-normatively and are named by hand. The scope reminder is advisory text — the model judges what
-is in scope; nothing blocks an off-SOW edit mechanically. Whether `SessionEnd` fires when a
+normatively and are named by hand. Nothing forces a session to close itself out: that is a norm,
+and `session-ledger.py list --status unclosed` stays the backstop list. The `finished` label is a
+desktop sidebar title: the reconciler updates it only while the app is open, and the title persists
+after. Terminal CLI sessions carry the ledger's and the vault note's `status:`; Codex and claude.ai
+have neither hooks nor a ledger. A prompt after a close-out does not reopen the ledger, and
+`SessionEnd` then lists it `unclosed` while the board keeps it `finished`. `close` sets `finished`
+even when SOW items remain (a retired session); until the engine follow-up proposed 2026-10-11, the
+vault note's `status: open-items-remain` and the Ceres `blocked` receipt carry the truth. The
+closeout guard checks one repo per close-out: the one the session closes from. The scope reminder is advisory text — the model judges what is in scope; nothing
+blocks an off-SOW edit mechanically. Whether `SessionEnd` fires when a
 Desktop session is archived (rather than its process exiting) is UNVERIFIED — the `unclosed`
 list may miss such sessions until they are resumed. The audit lists what was attempted; only
 the close-time probes establish what landed.
@@ -762,7 +971,7 @@ Needs Action takes red, In Progress yellow; priority shown as its letter; 15-min
 
    | State | Sidebar | Operon colour | Means |
    |---|---|---|---|
-   | `needs-action` | 🔴 | #DC2626 | JP must act: a permission, a question, a decision, a review, or `/closeout` |
+   | `needs-action` | 🔴 | #DC2626 | JP must act: a permission, a question, a decision, a review — or a stopped session that finished its acceptance without closing itself out: resume it so it runs `/closeout archive` |
    | `in-progress` | 🟡 | #CA8A04 | an agent is working now |
    | `waiting` | 🟣 | #9333EA | blocked outside the session: CI, PR review, another session, a third party |
    | `planned` | 🟠 | #FF7B0F | queued, not started |
@@ -775,13 +984,20 @@ Needs Action takes red, In Progress yellow; priority shown as its letter; 15-min
    omitted when there is none. The `<client>-<YYYYMMDD>-<topic-slug>` name of rule 3 stays the
    ledger's searchable key; the sidebar shows the display title instead. Project codes live in
    `PROJECTS` in `bin/session-ledger.py` — extend that table, never invent codes per session.
+   **Reading a title:** the [Session Label Key](https://claude.ai/artifact/KWcVJeGiYpNEaWBqcAR7Kz)
+   (a private artifact; its source is [`docs/session-label-key.html`](../../docs/session-label-key.html))
+   decodes every part, including Operon's definition of each priority letter. Those definitions
+   live in Operon's settings in the vault (`.obsidian/plugins/operon/data.json`,
+   `taxonomy.priorities`); the key copies them and is not their source.
 3. **Sidebar sections, one per state**, named `<emoji> <State>`. A session's section and title
    are written only by the reconciler or by `/sow`, never by hand-curated pins.
 4. **Transitions are automatic.** Hooks (`session-ledger-hooks.json`): a prompt → `in-progress`;
    `Notification` of a permission prompt or elicitation dialog → `needs-action` (it overrides a
    hold; other notification types are ignored); `Stop` → `needs-action` unless the ledger holds
-   `waiting`/`parked`/`planned`/`dropped`; `/closeout` → `finished`. A session that is running
-   shows `in-progress` even after a `/closeout`. Priority and project come from the ledger
+   `waiting`/`parked`/`planned`/`dropped`; `/closeout` → `finished`. Under the live applier
+   (`reconcile --from-app`) app rows carry no running flag and a closed ledger's hooks skip the
+   state flip, so a session that takes more prompts after its close-out stays `finished` (engine
+   follow-up proposed 2026-10-11). Priority and project come from the ledger
    (`state --priority`); only a session without a ledger keeps hand edits made to its title. A session sets a
    hold with `session-ledger.py state waiting --reason "<what it waits on>"`.
    `session-ledger.py reconcile` derives every row (running, open PR, merged PR, idle days,
@@ -793,17 +1009,56 @@ Needs Action takes red, In Progress yellow; priority shown as its letter; 15-min
 desktop app is open. Renaming a session whose title JP set by hand asks him first and is declined
 in an unattended run (app behaviour) — such rows stay as they are until he approves once.
 
+**Nested side sessions share their root's section (2026-10-18).** **Ruled by JP, 2026-10-18, live in
+chat** (session `cc-20261017-ceres-381-sanction-status-fix`, read from its transcript): "well then
+technically the root session shouldnt be in the finished as well considering this spawn still has
+work to to." The rule: a root is never filed under ⚪ Finished while any session nested under it, at
+any depth, still has open work; it files under the most urgent state among itself and its live
+nested descendants, in the table's order (Needs Action first). The app files a side session under
+the session that started it, at every depth (sessions three levels below a root were live on
+2026-10-18), and `move_sessions` refuses to move it alone ("nested sessions move with their parent.
+Nothing was moved"; the refusal names the top of the chain, the root). So a family shows in one
+section, which is how the rule is applied: the reconciler moves only roots, and a finished root with
+a needs-action child is moved to 🔴 Needs Action. The reconciler also follows a chain through an
+archived session: a live session reached that way counts toward the live top of its chain, and a
+family whose top is archived is not moved. The app keeps nesting through an archived session: when
+the reconciler moved `local_6f2828bc` to 🔴 Needs Action after 1.7.39 reached the primary checkout
+(2026-10-18, 10:05Z), all six live sessions it reaches through archived parents moved with it
+(`get_session`, read after the move). Titles stay per session, so that root keeps its ⚪ title
+*(chair's reading: JP's words concern the section; the title still says the root's own work is
+done)*. Within what the board can move, no nested session is filed under a section less urgent than
+its own state. The plan reports as blocked, with the root named, each nested session that will not
+show in its own section: one less urgent than its family (a finished child of a needs-action root),
+and every session of a family whose root is archived or a routine run, which the board cannot move
+at all, so they stay wherever that root was filed. Only detaching puts such a session in its own
+section: "Detach to top level" in the sidebar (JP), or `detach_session`, which acts only on a
+session the calling session started and the user has not moved, or on `self` when another session's
+Claude started it, and refuses forks, task chips and a side session that shares another session's
+worktree (its tool description, 2026-10-18). The 15-minute task started none of them and runs
+unattended, where the tool is unavailable, so it never detaches. A detached session (`detached:
+true`) is filed on its own. A fork the app files record only as `forkedFromSessionId` is treated as
+top level. That is a disclosed risk, not a finding: on 2026-10-10 the app refused moves of three
+such forks as nested while the top of their chain was live, and `get_session` does not report fork
+nesting; one of them, `local_7ed717df`, has since been moved into its own group. No fork of a live
+chain was live on 2026-10-18. A refused move is dropped by the applier and tried again on the next
+run, and the fork's state is not rolled up to its root. Moving a pinned session into a group unpins
+it (the tool's description); the board moves a root whether or not it is pinned, as it did before
+this rule. `reconcile --sessions` reads nesting from `get_session`'s `parentSessionId`/`detached`,
+or from `list_sessions`' `startedBy`, which appears on linked sessions only (side sessions Claude
+started and linked forks; not on sessions spawned from a task without `sideSession`, plain forks or
+detached sessions); `--from-app` reads it from the app's files.
+
 ## Session close-out — mandatory metrics report (canonical, ratified 2026-07-30)
 
-**Trigger — archival only.** This report is NOT part of routine close-out or a session going
-idle. It fires ONLY when JP issues the explicit close-out command for a session — the command
-that means the session is being **abandoned and archived**: no further messages, never used
-again. When that command is given, the Session Metrics Report is the session's **final act**
-before it goes dark. A session that is merely paused, waiting, or between slices does NOT
-produce this report — only the one being retired. The Strategist requests it as the last
-thing asked of that session; the session answers, and is then abandoned. The non-terminal audit
-close-out (`/closeout`, § Session ledger above) is separate and may run at any time;
-`/closeout archive` runs it first, then this report.
+**Trigger — every `/closeout archive` (JP, 2026-10-11; the reading is the chair's).** This report
+runs at every `/closeout archive`: a session closing on completed, validated work, run by the
+session itself without being asked or typed by JP, or a session being retired with its remainder
+recorded (§ Session ledger, "Sessions close themselves out"). It is the session's **final act**
+before it goes dark. A session that is merely
+paused, waiting, or between slices does NOT produce this report; the non-terminal audit
+(`/closeout`, § Session ledger above) may run at any time. `/closeout archive` runs that audit
+first, then this report. Until 2026-10-11 this report fired only when JP issued the archive command
+himself; JP ruled he never asked to be the only one who could close a session out.
 
 Non-negotiable rule for every number in it: label each as **VERIFIED** (checked against
 git/disk at report time) or **ESTIMATED** (reconstructed from conversation, could be off).
@@ -900,39 +1155,65 @@ means nothing is owed in either direction.
 ## Push / PR
 - Never `git push --force` to a shared branch. Use `--force-with-lease` only on your
   own feature branch, and only after stating why.
-- **Push authority (updated 2026-07-13; scope corrected 2026-08-16 — read this correction,
-  not just the original text below):** The Strategist-chair gate exists to stop an
+- **Push authority (updated 2026-07-13; scope corrected 2026-08-16; merge authority settled
+  2026-10-16 — the auto-merge ruling below governs where older wording differs):** The
+  Strategist-chair gate exists to stop an
   **autonomous multi-agent campaign** (Workflow-spawned agents, background Agent-tool
   fan-outs, orchestrated swarms running without JP present in the loop) from self-merging
   to `main` unsupervised — that was the entire original problem it was built to solve.
   It was never meant to apply to a **single CODE session that JP is directly, interactively
-  driving in the same live conversation.** In that case JP himself is the Strategist chair
-  for that session — there is no separate approval channel to route to, and routing to one
-  anyway just adds a step that accomplishes nothing except sitting on finished, gate-verified
-  work. Concretely:
-  - **Autonomous/multi-agent campaigns:** the original rule stands unchanged. No agent may
-    self-authorize a push/merge to `main`, even under a stale or general prior instruction.
-    Verify gates, present the report, wait for explicit Strategist-chair review of *that*
-    push before it happens.
-  - **A single interactive CODE session with JP live in the conversation:** once JP has
-    given an explicit, current-turn instruction to push or merge a *specific* piece of work
-    (not a standing/ambient permission from an earlier session), the session may proceed —
-    push feature branches, and merge PRs via `gh pr merge` — after verifying gates are
-    actually green (typecheck clean · tests green, no regression · scanners pass ·
-    review threads resolved · CI green). **Verify, then act. Do not manufacture a second
-    approval step JP already gave in this turn.**
-  - **Auto-merge on green gates — standing policy (ratified 2026-08-25):** for a PR the
-    session itself opened during a live interactive session, once every gate is verified
-    green (tests, lint, type-check, CI, review threads resolved, and any repo-specific
-    gates — version-manifest/documentation-completeness verify for `sentinel-memory-os`,
-    the analogous checks elsewhere), **merge it without waiting for a fresh per-PR
-    instruction.** JP does not need to re-approve a PR whose gates the session already
-    verified — that repeats work JP delegated by starting the session at all. This does
-    not touch the escalation list below (still real irreversibility only), does not extend
-    to autonomous/multi-agent campaigns (unchanged, still requires explicit review), and
-    does not relax "verify gates are ACTUALLY green" — a session that merges on a
-    misread or partial CI result has violated this policy, not exercised it.
-  - **Why this correction exists:** the original wording ("do not ask JP — present the
+  driving in the same live conversation**, and it is not a JP approval step. Concretely:
+  - **Autonomous/multi-agent campaigns:** no worker self-merges to `main` unsupervised. The
+    campaign's orchestrator is its Strategist chair: it runs the judge-tier review of each
+    worker's PR and merges it under the auto-merge ruling below. "Strategist-chair review"
+    means that orchestrator review, never a wait for JP.
+  - **A single CODE session:** the session's statement of work (`/sow`, Session ledger above)
+    is the instruction to merge what it delivers. No per-PR or current-turn instruction from JP
+    is needed. **Verify, then act. Do not manufacture a second approval step.**
+  - **Auto-merge — every in-SOW delivery is merged (Sanctioned by: JP, 2026-10-16,
+    CHG-2026-10-19-001; extends the 2026-08-25 auto-merge-on-green policy and JP's 2026-10-11
+    "... stop asking me for approval to merge shit" (session `5c25bcec`, 2026-10-11T16:32Z)):**
+    "NO DELIVERY WILL BE LEFT UNMERGED EVER. I DO
+    NOT NEED TO APPROVE A MERGE IF IT WAS APART OF THE SOW. ALL ISSUES RESOLVED AND FIXED
+    AUTOMATICALLY, AUTO MERGE WHEN DONE, AND DELETE BRANCH"
+    - **Who merges:** the session that delivered the work, or its orchestrator, as soon as
+      the gates are green. JP never approves these merges (a review gate he set on the repo is
+      the one exception; see the last limit below). No in-SOW delivery is left open,
+      parked, or reported as "green, awaiting merge".
+    - **Gates, on the exact head being merged:** CI `status: completed` +
+      `conclusion: success` wherever the repo runs CI (a repo with no PR checks says so in
+      the PR and runs its local tests instead of claiming green); a judge-tier review (§9f)
+      recorded on the PR; every review thread resolved; repo-specific gates (version
+      manifest, documentation completeness, and the like); `main` re-fetched immediately
+      before the merge, which uses `--match-head-commit`. Merging on a misread or partial
+      gate result violates this rule; it does not exercise it.
+    - **Findings and conflicts are the session's to fix:** judge findings, reviewer threads,
+      merge conflicts, a VERSION or CHG id that `main` already took (renumber upward). Fix,
+      re-verify, merge. None of these is a reason to hand the merge back.
+    - **After the merge, delete the branch:** `gh pr merge --squash --delete-branch`, or
+      delete the ref, then remove the worktree per the Clean-state rule above. This ruling
+      sanctions deleting a merged branch; it is not escalated. Where the repo has GitHub's
+      "automatically delete head branches" on (`gh api repos/<owner>/<repo> --jq
+      .delete_branch_on_merge`; true on `sentinel` and `sentinel-memory-os` on 2026-10-19), the
+      remote ref is already gone after the merge; the local branch and worktree still need
+      removing.
+    - **A tool or classifier refuses the merge** (for example Claude Code auto mode's "Merge
+      Without Review"): fix what it objects to, for example by posting the judge verdict on
+      the PR (`gh pr review --comment`, since a shared GitHub identity cannot approve its own
+      PR), then merge; or have the orchestrator merge under this ruling. Never park the merge
+      on JP.
+    - **Limits that still bind:** §5 (money movement, legal commitments, member/owner rights)
+      still needs JP. This ruling covers merging delivered work, not deciding those
+      questions. Work outside the SOW is spun off (Session ledger), not merged under this
+      ruling. The escalation list and the owned-repo rule below are unchanged.
+    - **A review gate JP chose is not an escalation.** A repo ruleset or CODEOWNERS rule that
+      requires JP's review (sentinel since 2026-10-19, CHG-2026-10-18-005: CODEOWNERS `*
+      @JPF1111` and the ruleset `sentinel-review-required`, which requires code-owner review and
+      last-push approval) is a gate JP chose, not an escalation. Request his review, report the
+      PR as "awaiting the ruleset's code-owner review", and merge as soon as it lands. Never
+      bypass it, including through a bypass integration. "Never park on JP" forbids asking for a
+      discretionary approval the SOW already gave.
+  - **Why the 2026-08-16 correction exists:** the original wording ("do not ask JP — present the
     report to the Strategist chair") was written with only the multi-agent case in mind, but
     read literally it also blocked the single-session case — and did, causing real harm: a
     2026-08-16 audit found genuine, never-recovered work sitting in this exact gap (an
@@ -942,7 +1223,9 @@ means nothing is owed in either direction.
     the incident record.
   - Still escalate real irreversibility regardless of session type — see below.
 - **Still escalate to JP (real irreversibility, not ceremony):** history rewrite, force-push
-  to `main`, branch/tag deletion, secret rotation, anything touching production data or DNS.
+  to `main`, tag deletion, deleting a branch that has not merged, secret rotation, anything
+  touching production data or DNS. Deleting a branch after its PR merged is not escalated (auto-merge
+  ruling above).
 - **Never push to a repo JP does not own. (Ruled by JP, 2026-09-28: "NEVER push to any repo which I
   do not own.")** Owned means a remote on one of the GitHub accounts in
   `bin/gov-owned-accounts.txt` (`FinTechGlobalSolutions`, `JPF1111`, `QuorumBooks`), and every push URL
@@ -967,9 +1250,13 @@ means nothing is owed in either direction.
   `bin/gitpush.py`, so text that merely mentions a push (a commit message, an echo, a heredoc, a
   `git+ssh://` URL) is not a push. **Other stated limits:** the hooks do not see a push inside a
   script, alias, shell function or `make`-style runner, or from another vendor's tool. When the
-  ownership guard cannot tell which repo a push runs in (an unresolved `$VAR` in a `cd`) or cannot
-  parse the command, it allows that push with a warning; the force-push ban and the origin/main rule
-  do not depend on the repo and still apply (to an unparseable command by its text). A `gh pr create`
+  ownership guard cannot tell which repo a push runs in (an unresolved `$VAR` in a `cd`), it allows
+  that push with a warning; the force-push ban and the origin/main rule do not depend on the repo and
+  still apply. A command its first reader cannot lex (an apostrophe in a `# comment`) is read again
+  the way bash reads it, so its real pushes are judged like any other and prose that mentions a push
+  is not; a `git push` in text no reader can read (an unbalanced quote) is blocked by all three
+  rules alike, with "run the push as a command of its own" (sentinel #119; until then the ownership
+  guard allowed such a push and the other two matched the raw text). A `gh pr create`
   or `gh api` write against a foreign repo is blocked only because it needs a pushed branch first.
   Why it exists: on 2026-09-28 a sync wrote generated law into clones of `Subfly/YABA` and
   `headroomlabs-ai/headroom` (replacing a tracked upstream file in one, prepending a line to another)

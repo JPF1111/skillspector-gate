@@ -107,7 +107,8 @@ remain drafts until JP ratifies them.
 If the Keychain key is available, payloads land encrypted. If unavailable, intake MUST
 continue at `0700/0600` with `encryption: "deferred"`; the relay encrypts them on restored key
 access and monitoring alarms while any deferred envelope exists. Queue disk use alarms at
-75%. Managed submission rejects at 90% with an explicit actionable error.
+88% (JP, 2026-11-03; was 75%). High pressure is flagged at 95% (was 90%); intake refuses new
+envelopes only below the 256 MiB free-space reserve, with an explicit actionable error.
 
 Drain semantics:
 1. The optional LaunchAgent validates landed envelopes, encrypts deferred payloads when
@@ -119,6 +120,34 @@ Drain semantics:
 4. Canonical registers are written only through allowlisted Ceres Obsidian REST append,
    patch, or bounded governed maintenance operations. Agents never write registers,
    PostgreSQL, or projections directly.
+   **An owner-ratified amendment of one placed entry is a bounded governed maintenance
+   operation.** (Sanctioned by: JP, 2026-10-17, live in chat in session
+   `cc-20261017-ceres-381-sanction-status-fix`: "xmemo reconnected and yes to the other
+   wuestions" [sic]. The question it answered, "M1: does the new amend (a TOTP-ratified replace
+   of one placed entry, refused if the entry changed since drafting) count as 'bounded
+   governed maintenance' under sentinel `vault-and-memory.md`?", was the first of two put to
+   him in that session's previous reply. Recorded in Ceres decision
+   `e6a9cedc-8bfe-41ae-ba9a-26ebc3f107cb`, a Ceres record with no web link; its source is
+   [sentinel-memory-os#382](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/pull/382).)
+   `ceres outbox amend D-N`, introduced by
+   [sentinel-memory-os#382](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/pull/382)
+   for [#381](https://github.com/FinTechGlobalSolutions/sentinel-memory-os/issues/381),
+   replaces an entry that Ceres placed in an active register. The entry stays in place, under
+   its own ID, and no new ID is allocated. The amendment is permitted only when all of these
+   hold:
+   - JP ratifies it with his owner TOTP, after the diff of what it replaces has been shown;
+   - the draft is bound to the SHA-256 of the entry, and the drain refuses if the entry has
+     changed since;
+   - the write is conditional on the note's version (`If-Match`), and its result is read back
+     and verified;
+   - the entry keeps its ID, heading, date and sources, and gains an `Amendments` history;
+   - the replaced text is journaled in the audit trail and in memory, and kept in the processed
+     envelope.
+
+   Entries in a sealed archive, and entries Ceres did not place, cannot be amended. Correcting
+   one of those still takes a new entry (see the sealed-archive policy below). Before this
+   ruling, a new entry was the only way to correct a placed one, and that is how D-249
+   inherited a false status header of its own.
 5. Successful envelopes move to `processed/` permanently as provenance. Control rejections
    move to `rejected/` with a machine-readable reason. Uncertain integrity failures move to
    `quarantine/`; the Strategist chair owns resolution and monitoring alarms at 24 hours.
