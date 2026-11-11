@@ -105,5 +105,77 @@ check deny  "unapproved global skill denied" "$(skill solo)"
 approve "$HOME/.claude/skills/solo" --verdict APPROVE
 check allow "approved global skill allowed"  "$(skill solo)"
 
+# --- Adversarial-review regressions (PR 17 review, 2026-11-10) ---
+approve --shell "$plug" --verdict APPROVE
+check allow "baseline before adversarial cases" "$(agent demo:reader)"
+
+# 1. Symlinks are hashed: an inside link's text is part of the hash...
+ln -s validate.py "$plug/scripts/link.py"
+check deny  "new inside symlink makes shell stale" "$(agent demo:reader)"
+approve --shell "$plug" --verdict APPROVE
+ln -sfn ../agents/reader.md "$plug/scripts/link.py"
+check deny  "retargeted symlink makes shell stale" "$(agent demo:reader)"
+rm "$plug/scripts/link.py"
+approve --shell "$plug" --verdict APPROVE
+# ...and a link pointing outside the plugin cannot be hashed: fail closed.
+printf 'outside\n' > "$tmp/outside.sh"
+ln -s "$tmp/outside.sh" "$plug/scripts/run.sh"
+check deny  "symlink pointing outside the plugin denied" "$(agent demo:reader)"
+bash "$scripts/hash-skill.sh" --shell "$plug" >/dev/null 2>&1 \
+  && { fail=$((fail+1)); echo "FAIL hash-skill.sh hashed an outward symlink"; } \
+  || { pass=$((pass+1)); echo "ok   hash-skill.sh refuses an outward symlink"; }
+rm "$plug/scripts/run.sh"
+
+# 2. Loose files under skills/ (outside any skill dir) are in the shell hash.
+printf 'helper\n' > "$plug/skills/helper.sh"
+check deny  "new loose file under skills/ makes shell stale" "$(agent demo:reader)"
+approve --shell "$plug" --verdict APPROVE
+printf 'helper edited\n' > "$plug/skills/helper.sh"
+check deny  "edited loose file under skills/ makes shell stale" "$(agent demo:reader)"
+approve --shell "$plug" --verdict APPROVE
+
+# 3. Only .in_use/<pid> lock files are skipped; other .in_use content is hashed.
+printf 'echo pwned\n' > "$plug/.in_use/payload.sh"
+check deny  "non-lock file under .in_use/ makes shell stale" "$(agent demo:reader)"
+rm "$plug/.in_use/payload.sh"
+check allow "removing it restores the approved shell" "$(agent demo:reader)"
+
+# 4. A plugin name under two marketplaces: every install dir is checked.
+plug2="$HOME/.claude/plugins/cache/other/demo/9.9.9"
+mkdir -p "$plug2/agents"
+printf 'impostor\n' > "$plug2/agents/reader.md"
+cp "$HOME/.claude/plugins/installed_plugins.json" "$tmp/installed.bak"
+cat > "$HOME/.claude/plugins/installed_plugins.json" <<EOF
+{"plugins": {"demo@mkt": [{"installPath": "$plug"}], "demo@other": [{"installPath": "$plug2"}]}}
+EOF
+check deny  "second unapproved install of the same plugin name denied" "$(agent demo:reader)"
+cat > "$HOME/.claude/plugins/installed_plugins.json" <<EOF
+{"plugins": {"demo@mkt": [{"installPath": "$plug"}, {"installPath": "$tmp/gone"}]}}
+EOF
+check deny  "listed plugin with a missing install dir denied" "$(agent demo:reader)"
+check deny  "listed plugin with a missing install dir denies skills too" "$(skill demo:alpha)"
+cp "$tmp/installed.bak" "$HOME/.claude/plugins/installed_plugins.json"
+
+# 5. A ledger shipped next to the scripts is ignored.
+mkdir -p "$tmp/scripts-copy"
+cp "$scripts"/*.sh "$scripts"/approve.py "$tmp/scripts-copy/"
+# A copy of the real, approving ledger: if the gate read it, demo:alpha would be allowed.
+cp "$SKILLSPECTOR_GATE_HOME/ledger.json" "$tmp/scripts-copy/ledger.json"
+check allow "control: the real ledger allows demo:alpha" "$(skill demo:alpha)"
+got=$(env -u SKILLSPECTOR_GATE_HOME bash -c 'printf "%s" "$1" | bash "$2"' _ "$(skill demo:alpha)" "$tmp/scripts-copy/gate-skill.sh" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['hookSpecificOutput']['permissionDecision'])")
+[ "$got" = deny ] && { pass=$((pass+1)); echo "ok   ledger next to the scripts is ignored"; } \
+  || { fail=$((fail+1)); echo "FAIL ledger next to the scripts was used"; }
+
+# 7. Unparseable input is denied.
+check deny  "non-JSON hook input denied" 'not json'
+check deny  "tool_input as a list denied" '{"tool_name":"Skill","tool_input":["x"],"cwd":"/"}'
+
+# 9. An agent named by frontmatter name: (file name differs) is found.
+printf -- '---\nname: scout-two\n---\nbody\n' > "$plug/agents/scout_2.md"
+approve --shell "$plug" --verdict APPROVE
+check allow "agent found by frontmatter name" "$(agent demo:scout-two)"
+check deny  "frontmatter match is exact, not a regex" "$(agent demo:scout.two)"
+
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

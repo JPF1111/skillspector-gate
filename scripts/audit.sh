@@ -64,9 +64,13 @@ if [ -f "$installed" ]; then
   done < <(python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1]))
+seen = set()
 for key, entries in d.get('plugins', {}).items():
-    if entries:
-        print(key.split('@', 1)[0] + '\x1f' + entries[0].get('installPath', ''))
+    for e in entries or []:
+        row = (key.split('@', 1)[0], (e or {}).get('installPath', ''))
+        if row not in seen:
+            seen.add(row)
+            print(row[0] + '\x1f' + row[1])
 " "$installed")
 fi
 

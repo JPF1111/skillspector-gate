@@ -9,10 +9,14 @@
 # Usage: resolve-skill.sh <skill-name> <cwd>
 #        resolve-skill.sh --plugin-root <plugin>:<member>
 #
-# --plugin-root prints the real install directory of the plugin named
-# before the colon, if it is listed in installed_plugins.json, and exits
-# 1 otherwise. The gate uses it to check the plugin's shell entry (see
-# hash-skill.sh --shell) for plugin skills, commands and agents.
+# --plugin-root prints every distinct real install directory of the
+# plugin named before the colon, one per line, across all marketplaces and
+# scopes listed in installed_plugins.json (the Skill/Agent name carries no
+# marketplace, so any of them may be the one that runs). Exit codes:
+#   0  listed, all install dirs present
+#   1  not listed (not an installed plugin; the gate leaves it alone)
+#   2  listed but an install dir is missing or the file is unreadable
+#      (the gate denies: fail closed)
 set -uo pipefail
 
 plugin_root_only=0
@@ -37,6 +41,36 @@ if [[ "$name" == *:* ]]; then
   installed_json="$HOME/.claude/plugins/installed_plugins.json"
   [ -f "$installed_json" ] || exit 1
 
+  if [ "$plugin_root_only" -eq 1 ]; then
+    INSTALLED_JSON="$installed_json" PLUGIN_NAME="$plugin" python3 -c "
+import json, os, sys
+try:
+    with open(os.environ['INSTALLED_JSON']) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(2)
+target = os.environ['PLUGIN_NAME']
+roots, listed = [], False
+for key, entries in (data.get('plugins') or {}).items():
+    if key.split('@', 1)[0] != target:
+        continue
+    listed = True
+    for e in entries or []:
+        p = (e or {}).get('installPath') or ''
+        if not p or not os.path.isdir(p):
+            sys.exit(2)
+        r = os.path.realpath(p)
+        if r not in roots:
+            roots.append(r)
+if not listed:
+    sys.exit(1)
+if not roots:
+    sys.exit(2)
+print('\n'.join(roots))
+"
+    exit $?
+  fi
+
   install_path=$(INSTALLED_JSON="$installed_json" PLUGIN_NAME="$plugin" python3 -c "
 import json, os, sys
 try:
@@ -54,11 +88,6 @@ sys.exit(1)
 " 2>/dev/null)
   [ -z "$install_path" ] && exit 1
   [ -d "$install_path" ] || exit 1
-
-  if [ "$plugin_root_only" -eq 1 ]; then
-    resolve_real "$install_path"
-    exit 0
-  fi
 
   candidate="$install_path/skills/$skill"
   if [ -d "$candidate" ]; then

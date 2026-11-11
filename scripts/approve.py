@@ -6,7 +6,7 @@ Usage:
   approve.py --shell <plugin-install-dir> --verdict ... --note "..." [--member-verdict NAME=REJECT]
 
 Writes/updates <data-dir>/ledger.json (default ~/.claude/skillspector-gate/ledger.json, or
-next to this script when a ledger already lives there; override with $SKILLSPECTOR_GATE_HOME),
+~/.claude/skillspector/ledger.json for a standalone install; override with $SKILLSPECTOR_GATE_HOME),
 keyed by the resolved absolute directory path. A --shell entry covers a plugin's content
 outside skills/ and is marked kind "plugin-shell". The PreToolUse gate hook (gate-skill.sh) reads this file and
 blocks any skill whose current content hash doesn't match an entry with
@@ -21,14 +21,20 @@ import sys
 from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Same resolution order as gate-skill.sh: $SKILLSPECTOR_GATE_HOME, else a ledger
-# already next to these scripts (standalone install), else ~/.claude/skillspector-gate.
+# Same resolution order as gate-skill.sh, home paths only (never this script's own
+# install dir): $SKILLSPECTOR_GATE_HOME, else ~/.claude/skillspector-gate if it holds a
+# ledger, else the standalone install ~/.claude/skillspector if it holds one, else
+# ~/.claude/skillspector-gate.
+_GATE_HOME = os.path.expanduser("~/.claude/skillspector-gate")
+_STANDALONE = os.path.expanduser("~/.claude/skillspector")
 if os.environ.get("SKILLSPECTOR_GATE_HOME"):
     DATA_DIR = os.environ["SKILLSPECTOR_GATE_HOME"]
-elif os.path.exists(os.path.join(SCRIPT_DIR, "ledger.json")):
-    DATA_DIR = SCRIPT_DIR
+elif os.path.exists(os.path.join(_GATE_HOME, "ledger.json")):
+    DATA_DIR = _GATE_HOME
+elif os.path.exists(os.path.join(_STANDALONE, "ledger.json")):
+    DATA_DIR = _STANDALONE
 else:
-    DATA_DIR = os.path.expanduser("~/.claude/skillspector-gate")
+    DATA_DIR = _GATE_HOME
 LEDGER_PATH = os.path.join(DATA_DIR, "ledger.json")
 HASH_SCRIPT = os.path.join(SCRIPT_DIR, "hash-skill.sh")
 

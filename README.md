@@ -126,11 +126,16 @@ is the same whether it runs from your shell or from a hook with no `LANG` set. `
 the hook's `allow`/`deny` decision.
 
 **What's gated:** anything under `~/.claude/skills/` (except `synced/`), project-level
-`.claude/skills/`, and — for any plugin listed in `installed_plugins.json` — its skills
+`.claude/skills/`, and — for any plugin listed in `installed_plugins.json`, at every install
+directory its name maps to (all marketplaces and scopes) — its skills
 (`Skill` tool), its commands (`Skill` tool, `commands/<name>.md`) and its agents (`Agent` tool,
 `agents/<name>.md`). Every plugin member also needs the plugin's shell entry
-(`hash-skill.sh --shell`: the install dir minus `skills/` and Claude Code's `.in_use/` lock
-files). A plugin-qualified name from an installed plugin that matches no skill, command or agent
+(`hash-skill.sh --shell`: the install dir minus its skill directories and Claude Code's
+`.in_use/<pid>` lock files). Symlinks are hashed by link text; a symlink pointing outside the
+hashed directory fails the hash, so the gate denies. Unparseable hook input, and a listed plugin
+whose install dir is missing, are denied. Compiled Python (`__pycache__/`) is hashed, so a
+plugin whose hooks run Python goes stale once after its first run (and after a Python upgrade)
+and needs re-approval then. A plugin-qualified name from an installed plugin that matches no skill, command or agent
 on disk is denied.
 
 **Not covered — stated so no one mistakes this for more than it is:**
@@ -140,6 +145,9 @@ on disk is denied.
   covered by those hashes; anything else it fetches is governed by your instruction-source rules,
   not this ledger. A `Read` gate was considered and not built: it would also block the review step
   (`skill-inspector` has to read a skill before it can be approved).
+- A skill that runs a file from a *sibling* skill directory of its plugin is not invalidated when
+  that sibling changes; the sibling's own entry is. Loose files under `skills/` (outside any
+  directory holding a `SKILL.md`) are in the shell hash.
 - Plugin **hooks** run on their own events, not through `Skill` or `Agent`, so a `PreToolUse` gate
   cannot stop them. Their files are in the shell hash, which flags a change at the next skill or
   agent call from that plugin, but the hook itself has already run by then.

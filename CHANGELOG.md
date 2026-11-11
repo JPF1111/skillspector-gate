@@ -12,8 +12,22 @@
 - **Plugin commands are gated.** `<plugin>:<command>` (`commands/<command>.md`) previously resolved
   to nothing and was allowed; it now needs the shell entry.
 - `resolve-skill.sh --plugin-root`, `scripts/audit.sh`, `tests/test-plugin-shell.sh` (run in CI).
-- `approve.py --risk-score/--risk-severity`; the ledger may live next to the scripts (standalone
-  install), found before the `~/.claude/skillspector-gate` default.
+- `approve.py --risk-score/--risk-severity`; a standalone install's ledger at
+  `~/.claude/skillspector/ledger.json` is found when `~/.claude/skillspector-gate` has none.
+
+### Security (adversarial review of this release)
+- Symlinks are hashed (by link text) in both modes; a symlink resolving outside the hashed
+  directory makes `hash-skill.sh` exit 3 and the gate deny. Previously `find -type f` skipped
+  them, so a symlinked script's target could change under an approved hash. No existing ledger
+  entry contained a symlink, so per-skill hashes are unchanged.
+- The shell hash covers loose files under `skills/` (anything not inside a directory holding a
+  `SKILL.md`), and skips only `.in_use/<pid>` lock files, not the whole `.in_use/` directory.
+- A plugin name listed under several marketplaces or scopes is checked at every install dir; a
+  listed plugin whose install dir is missing is denied.
+- The ledger is read only from home paths (`$SKILLSPECTOR_GATE_HOME`, `~/.claude/skillspector-gate`,
+  then the standalone `~/.claude/skillspector`), never from the scripts' own install dir.
+- Unparseable hook input is denied instead of allowed.
+- Plugin agents are also found by their frontmatter `name:`.
 
 ### Changed
 - Plugin skills now need both their skill entry and their plugin's shell entry. A plugin-qualified
