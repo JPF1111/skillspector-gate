@@ -20,11 +20,17 @@ Usage:
                                        0  found; every listed root is present
                                        1  not an installed or synced plugin
                                        2  installed_plugins.json is unreadable, or the name
-                                          is listed there with a missing install dir
+                                          is listed there with a missing install dir, or a
+                                          synced manifest entry for it is broken, or the name
+                                          is unknown while some synced entry is unreadable
                                           (the gate denies: fail closed)
   plugin-index.py find <root> <member> <skill|command|agent>
-                                     the member's real skill dir or .md file; exit 1 if none
-  plugin-index.py list               "<plugin>\\t<root>" for every root of every plugin
+                                     the member's real skill dir or .md file; exit 1 if none.
+                                     A command or agent must be a regular file inside <root>
+                                     and outside every skills/ skill dir (the shell hash skips
+                                     those); a file anywhere else is not found.
+  plugin-index.py list               "<plugin>\\t<root>" for every root of every plugin;
+                                     exit 2 (after printing what it can) if a source is broken
   plugin-index.py members <root>     "<skill|command|agent>\\t<member>" for every member
 """
 import json
@@ -88,35 +94,80 @@ def installed_roots(only=None):
     return out
 
 
+def _names_on_disk(account, mname):
+    """plugin.json names of every on-disk generation of a manifest entry."""
+    out = set()
+    try:
+        entries = os.listdir(account)
+    except OSError:
+        return out
+    for e in entries:
+        if e == mname or e.startswith(mname + "~g"):
+            d = os.path.join(account, e)
+            if os.path.isdir(d):
+                n = plugin_json(d).get("name")
+                out.add(n if isinstance(n, str) and n else mname)
+    return out
+
+
 def synced_roots():
-    out = []
+    """(rows, broken_names, broken_unknown).
+
+    rows: (name, root) for every live synced plugin.
+    broken_names: names of synced plugins whose manifest entry could not be
+      turned into a live directory (bad generation, or the live dir missing
+      while another generation is on disk). What Claude Code loads then is
+      not known, so the gate denies those names.
+    broken_unknown: True when something is broken and no name can be read
+      (unreadable manifest, malformed entry, non-string plugin.json name):
+      the gate then denies every plugin-qualified name it cannot resolve.
+    """
+    rows, broken_names, broken_unknown = [], set(), False
     try:
         accounts = sorted(os.listdir(SYNCED))
     except OSError:
-        return out
+        return rows, broken_names, broken_unknown
     for acct in accounts:
         account = os.path.join(SYNCED, acct)
-        try:
-            with open(os.path.join(account, "manifest.json")) as f:
-                plugins = json.load(f).get("plugins") or []
-        except Exception:
+        manifest = os.path.join(account, "manifest.json")
+        if not os.path.isdir(account) or not os.path.exists(manifest):
             continue
-        for p in plugins if isinstance(plugins, list) else []:
+        try:
+            with open(manifest) as f:
+                plugins = json.load(f).get("plugins")
+            if not isinstance(plugins, list):
+                raise ValueError
+        except Exception:
+            broken_unknown = True
+            continue
+        for p in plugins:
             if not isinstance(p, dict):
+                broken_unknown = True
                 continue
-            mname = p.get("name") or ""
+            mname = p.get("name")
             if not isinstance(mname, str) or not mname or "/" in mname or mname in (".", ".."):
+                broken_unknown = True
                 continue
-            try:
-                gen = int(p.get("generation") or 1)
-            except (TypeError, ValueError):
+            gen = p.get("generation", 1)
+            if gen is None:
+                gen = 1
+            if not isinstance(gen, int) or isinstance(gen, bool) or gen < 1:
+                names = _names_on_disk(account, mname)
+                broken_names |= names
+                broken_unknown = broken_unknown or not names
                 continue
             d = os.path.join(account, mname + (f"~g{gen}" if gen > 1 else ""))
             if not os.path.isdir(d):
+                # Nothing on disk at all: nothing can load. Another generation on
+                # disk: which one loads is not known, so deny that name.
+                broken_names |= _names_on_disk(account, mname)
                 continue
-            name = plugin_json(d).get("name") or mname
-            out.append((name, real(d)))
-    return out
+            name = plugin_json(d).get("name", mname)
+            if not isinstance(name, str) or not name:
+                broken_unknown = True
+                continue
+            rows.append((name, real(d)))
+    return rows, broken_names, broken_unknown
 
 
 def dedup(rows):
@@ -158,6 +209,28 @@ def walk(root, maxdepth, prune_skills):
             dirnames[:] = []
 
 
+def inside_skill_dir(root, path):
+    """Is <path> under <root>/skills/ inside a directory holding a SKILL.md?
+    hash-skill.sh --shell leaves those files to the skill's own entry, so a
+    command or agent there would be covered by no hash the gate checks."""
+    parts = os.path.relpath(path, root).split(os.sep)
+    if parts[0] != "skills":
+        return False
+    for i in range(2, len(parts)):
+        if os.path.isfile(os.path.join(root, *parts[:i], "SKILL.md")):
+            return True
+    return False
+
+
+def shell_member(root, path):
+    """A command/agent file the shell hash actually covers: a regular file
+    whose real path is inside <root> and outside every skill directory."""
+    r = real(path)
+    if not os.path.isfile(r) or not r.startswith(root + os.sep) or inside_skill_dir(root, r):
+        return None
+    return r
+
+
 NAME_RE = re.compile(r"^name:[ \t]*(.*?)[ \t]*$")
 
 
@@ -184,16 +257,21 @@ def find(root, member, kind):
                 return real(cand)
         else:
             if os.path.isfile(d) and d.endswith(".md") and os.path.basename(d)[:-3] == rel:
-                return real(d)
+                hit = shell_member(root, d)
+                if hit:
+                    return hit
             cand = os.path.join(d, rel + ".md")
-            if os.path.isfile(cand):
-                return real(cand)
+            hit = shell_member(root, cand) if os.path.isfile(cand) else None
+            if hit:
+                return hit
     # 0.3.0 fallbacks: a skill dir named <base> holding a SKILL.md up to 4 levels deep;
     # a */commands/<member>.md or */agents/<member>.md up to 3 levels deep outside skills/.
     if kind == "skill":
         for dirpath, dirnames, _ in walk(root, 4, False):
             for dn in dirnames:
                 cand = os.path.join(dirpath, dn)
+                if os.path.islink(cand):  # find -type d does not match a symlink
+                    continue
                 if dn == base and os.path.isfile(os.path.join(cand, "SKILL.md")):
                     return real(cand)
         return None
@@ -202,8 +280,10 @@ def find(root, member, kind):
     for dirpath, _, filenames in walk(root, 3, True):
         for fn in filenames:
             cand = os.path.join(dirpath, fn)
-            if cand.endswith(suffix) and os.path.isfile(cand):
-                return real(cand)
+            if cand.endswith(suffix) and not os.path.islink(cand):
+                hit = shell_member(root, cand)
+                if hit:
+                    return hit
             if fn.endswith(".md") and os.path.basename(dirpath) == DEFAULT_DIRS[kind]:
                 md_files.append(cand)
     if kind == "agent":
@@ -215,8 +295,9 @@ def find(root, member, kind):
             elif os.path.isdir(d):
                 candidates += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.endswith(".md")]
         for f in candidates + md_files:
-            if os.path.isfile(f) and frontmatter_name(f) == base:
-                return real(f)
+            hit = shell_member(root, f)
+            if hit and frontmatter_name(hit) == base:
+                return hit
     return None
 
 
@@ -229,9 +310,11 @@ def members(root):
                 if os.path.isdir(d):
                     names.update(n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n, "SKILL.md")))
             elif os.path.isfile(d) and d.endswith(".md"):
-                names.add(os.path.basename(d)[:-3])
+                if shell_member(root, d):
+                    names.add(os.path.basename(d)[:-3])
             elif os.path.isdir(d):
-                names.update(n[:-3] for n in os.listdir(d) if n.endswith(".md") and os.path.isfile(os.path.join(d, n)))
+                names.update(n[:-3] for n in os.listdir(d)
+                             if n.endswith(".md") and shell_member(root, os.path.join(d, n)))
         out += [(kind, n) for n in sorted(names)]
     return out
 
@@ -243,11 +326,16 @@ def main(argv):
             rows = installed_roots(argv[2])
         except Broken:
             return 2
-        rows += [r for r in synced_roots() if r[0] == argv[2]]
+        synced, broken_names, broken_unknown = synced_roots()
+        rows += [r for r in synced if r[0] == argv[2]]
         roots = dedup(r for _, r in rows)
+        if argv[2] in broken_names:
+            return 2
+        if not roots:
+            return 2 if broken_unknown else 1
         for r in roots:
             print(r)
-        return 0 if roots else 1
+        return 0
     if cmd == "find" and len(argv) == 5 and argv[4] in DEFAULT_DIRS:
         hit = find(real(argv[2]), argv[3], argv[4])
         if hit:
@@ -255,13 +343,22 @@ def main(argv):
             return 0
         return 1
     if cmd == "list" and len(argv) == 2:
+        status = 0
         try:
             rows = installed_roots()
         except Broken:
-            rows = []
-        for n, r in dedup(rows + synced_roots()):
+            print("plugin-index: installed_plugins.json is unreadable", file=sys.stderr)
+            rows, status = [], 2
+        synced, broken_names, broken_unknown = synced_roots()
+        for n, r in dedup(rows + synced):
             print(f"{n}\t{r}")
-        return 0
+        for n in sorted(broken_names):
+            print(f"plugin-index: synced plugin '{n}' has no loadable live directory", file=sys.stderr)
+        if broken_unknown:
+            print("plugin-index: a synced manifest or plugin.json is malformed", file=sys.stderr)
+        if broken_names or broken_unknown:
+            status = 2
+        return status
     if cmd == "members" and len(argv) == 3:
         for k, n in members(real(argv[2])):
             print(f"{k}\t{n}")

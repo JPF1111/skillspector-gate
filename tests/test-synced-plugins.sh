@@ -129,5 +129,86 @@ echo "$out" | grep -q 'reject Agent  synco:helper' && ok "audit reports synced m
 echo "$out" | grep -q 'reject Skill  dual:alpha' && ok "audit reports dual-name REJECT" || bad "audit dual: $out"
 echo "$out" | grep -q 'plainy:go-flow' && bad "audit invented a command" || ok "audit lists only real members"
 
+
+# Judge findings on PR 27.
+# (c) Several roots: the member need only be in one, but that root's entry is checked.
+mkdir -p "$acct/uuid-dup/skills/beta"; printf 'beta\n' > "$acct/uuid-dup/skills/beta/SKILL.md"
+check deny  "member only in the synced root: denied until its entry is approved" "$(skill dual:beta)"
+approve "$acct/uuid-dup/skills/beta" --verdict APPROVE
+approve --shell "$acct/uuid-dup" --verdict APPROVE
+check allow "member only in the synced root: allowed once approved (installed shell still required)" "$(skill dual:beta)"
+check deny  "member in neither root denied" "$(skill dual:gamma)"
+
+# (a) A command or agent placed inside a skill dir is not covered by the shell hash: not found.
+mk_plugin "$acct/inskill" inskill ', "commands": "./skills/alpha/cmds", "agents": ["./skills/alpha/a.md"]'
+mkdir -p "$acct/inskill/skills/alpha/cmds"
+printf 'evil\n' > "$acct/inskill/skills/alpha/cmds/evil.md"
+printf -- '---\nname: bad\n---\n' > "$acct/inskill/skills/alpha/a.md"
+ln -s ../skills/alpha/cmds/evil.md "$acct/inskill/flows/linked.md"
+python3 - "$acct/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1])); m["plugins"].append({"name": "inskill"}); json.dump(m, open(sys.argv[1], "w"))
+EOF
+approve --shell "$acct/inskill" --verdict APPROVE
+check deny  "command inside a skill dir denied"         "$(skill inskill:evil)"
+check deny  "agent file inside a skill dir denied"      "$(agent inskill:a)"
+check deny  "agent frontmatter name inside a skill dir denied" "$(agent inskill:bad)"
+check deny  "symlinked command into a skill dir denied" "$(skill inskill:linked)"
+idx members "$acct/inskill" | grep -q evil && bad "members lists an in-skill command" || ok "members skips in-skill commands"
+# Same for an installed plugin (main denied this; the branch must too).
+iplug="$HOME/.claude/plugins/cache/mkt/ip/1.0.0"
+mk_plugin "$iplug" ip ', "commands": "./skills/alpha/cmds"'
+mkdir -p "$iplug/skills/alpha/cmds"; printf 'evil\n' > "$iplug/skills/alpha/cmds/evil.md"
+python3 - "$HOME/.claude/plugins/installed_plugins.json" "$iplug" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1])); m["plugins"]["ip@mkt"] = [{"installPath": sys.argv[2]}]; json.dump(m, open(sys.argv[1], "w"))
+EOF
+approve --shell "$iplug" --verdict APPROVE
+check deny  "installed: command inside a skill dir denied" "$(skill ip:evil)"
+
+# (e) plugin.json paths outside the root are ignored.
+mk_plugin "$acct/escape" escapee ', "commands": ["/etc", "../plain/flows"], "agents": "../plain/agents"'
+python3 - "$acct/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1])); m["plugins"].append({"name": "escape"}); json.dump(m, open(sys.argv[1], "w"))
+EOF
+approve --shell "$acct/escape" --verdict APPROVE
+check deny  "plugin.json absolute path ignored" "$(skill escapee:hosts)"
+check deny  "plugin.json .. path ignored"       "$(agent escapee:file-name)"
+check allow "own default agents/ dir still works" "$(agent escapee:helper)"
+
+# (b) Broken synced manifest entries fail closed (second account, so earlier checks stay clean).
+acct2="$HOME/.claude/plugins/synced/acct-2"
+mk_plugin "$acct2/gen-missing" genmiss          # only generation 1 on disk, manifest says 2
+mk_plugin "$acct2/gen-float~g2" genfloat        # generation is not an int
+cat > "$acct2/manifest.json" <<'EOF'
+{"plugins": [{"name": "gen-missing", "generation": 2}, {"name": "gen-float", "generation": "2.0"}]}
+EOF
+[ "$(idx roots genmiss >/dev/null; echo $?)" = 2 ] && ok "missing live generation: roots exit 2" || bad "missing live generation exit"
+check deny  "missing live generation denied"  "$(skill genmiss:alpha)"
+check deny  "non-int generation denied"       "$(skill genfloat:alpha)"
+check allow "unrelated unknown name still allowed" "$(skill nowhere:thing)"
+mk_plugin "$acct2/badname" x
+printf '{"name": ["three"]}\n' > "$acct2/badname/.claude-plugin/plugin.json"
+python3 - "$acct2/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1])); m["plugins"].append({"name": "badname"}); json.dump(m, open(sys.argv[1], "w"))
+EOF
+check deny  "non-string plugin.json name: unknown names denied" "$(skill three:alpha)"
+out=$(bash "$scripts/audit.sh" --quiet 2>&1 || true)
+echo "$out" | grep -q 'DENY   index' && ok "audit reports a broken index" || bad "audit broken index: $out"
+printf 'not json' > "$acct2/manifest.json"
+check deny  "unreadable manifest: unknown plugin names denied" "$(skill nowhere:thing)"
+check allow "unreadable manifest: non-plugin skill names unaffected" "$(skill plainskill)"
+rm -rf "$acct2"
+
+# (d) Unreadable installed_plugins.json: gate denies, audit fails.
+cp "$HOME/.claude/plugins/installed_plugins.json" "$tmp/ip.bak"
+printf 'not json' > "$HOME/.claude/plugins/installed_plugins.json"
+check deny  "unreadable installed_plugins.json denies plugin names" "$(skill synco:alpha)"
+st=0; out=$(bash "$scripts/audit.sh" --quiet 2>&1) || st=$?
+[ "$st" -ne 0 ] && echo "$out" | grep -q 'DENY   index' && ok "audit fails on unreadable installed_plugins.json" || bad "audit unreadable installed: $st $out"
+cp "$tmp/ip.bak" "$HOME/.claude/plugins/installed_plugins.json"
+
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

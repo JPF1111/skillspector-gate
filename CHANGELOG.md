@@ -12,11 +12,25 @@
   entry and the plugin's shell entry, exactly like installed ones.
 - `plugin.json` `"skills"`, `"commands"` and `"agents"` paths are honoured when finding a member
   (e.g. a plugin whose commands live in `flows/`).
-- `audit.sh` walks synced plugins; `tests/test-synced-plugins.sh` (run in CI).
+- `audit.sh` walks synced plugins; `tests/test-synced-plugins.sh` (52 checks, run in CI).
+
+### Security (judge review of this release)
+- A command or agent file must be a regular file inside the plugin root and outside every
+  `skills/` skill directory. `hash-skill.sh --shell` skips skill directories, so a `plugin.json`
+  `"commands"`/`"agents"` path (or a symlink) pointing into one would otherwise have run with
+  no hash covering it. Applies to installed plugins too.
+- A broken synced manifest entry fails closed: a non-integer generation, or a live `~g<N>` dir
+  missing while another generation is on disk, denies that plugin's name; an unreadable manifest,
+  a malformed entry or a non-string `plugin.json` name denies every plugin-qualified name the
+  index cannot resolve. `plugin-index.py list` and `audit.sh` report and fail on a broken source
+  (including an unreadable `installed_plugins.json`, which 0.3.0's audit skipped silently).
+- `plugin.json` paths that are absolute or leave the plugin root are ignored.
 
 ### Changed
 - A name with several roots (installed and synced, two accounts) is checked at every root: every
-  shell approved, plus the member's own entry in each root that holds it.
+  shell approved, plus the member's own entry in each root that holds it. The member need only
+  exist in one root (0.3.0 denied when any install dir lacked it): which root Claude Code serves
+  a name from is not stated, so each root that could serve it is checked.
 - Member lookup (skills, commands, agents incl. frontmatter `name:`) moved from `gate-skill.sh`
   and `resolve-skill.sh` into `plugin-index.py`, so the gate, the resolver and the audit share one
   implementation. Behaviour for installed plugins is unchanged (`tests/test-plugin-shell.sh`

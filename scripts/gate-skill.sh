@@ -167,13 +167,15 @@ else:
 # Plugin-qualified name, from an installed or a claude.ai-synced plugin.
 # plugin-index.py roots: 0 = known (one root per line: every install dir,
 # then every live synced dir), 1 = not a plugin, 2 = listed in
-# installed_plugins.json but broken. Every root must have an approved
-# shell, and every root that holds the member must have it approved, so a
-# name with several roots is only ever stricter.
+# installed_plugins.json but broken, or a synced manifest entry is broken.
+# Every root must have an approved shell, and every root that holds the
+# member must have the member approved. The member need only exist in one
+# root: which root Claude Code serves a name from is not stated, so each one
+# that could serve it is checked, and a root without it serves nothing.
 if [[ "$name" == *:* ]]; then
   plugin_roots=$(python3 "$INDEX" roots "${name%%:*}" 2>/dev/null)
   roots_status=$?
-  [ "$roots_status" -eq 2 ] && deny "skillspector-gate: plugin '${name%%:*}' is listed in installed_plugins.json but an install dir is missing or the file is unreadable — blocked fail-closed."
+  [ "$roots_status" -eq 2 ] && deny "skillspector-gate: plugin '${name%%:*}' cannot be mapped safely (installed_plugins.json unreadable or an install dir missing, or a claude.ai-synced manifest entry broken; run: python3 $INDEX list) — blocked fail-closed."
   [ "$roots_status" -eq 0 ] || [ "$roots_status" -eq 1 ] \
     || deny "skillspector-gate: could not look up plugin '${name%%:*}' — blocked fail-closed."
 fi

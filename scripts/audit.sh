@@ -55,6 +55,13 @@ done
 # with the same name are one Skill call, and a name with several roots is
 # one call that checks them all, so each tool:plugin:member runs once.
 seen=$'\n'
+index_out=$(python3 "$SCRIPT_DIR/plugin-index.py" list 2>"${TMPDIR:-/tmp}/audit-index.$$")
+index_status=$?
+if [ "$index_status" -ne 0 ]; then
+  deny=$((deny+1))
+  printf 'DENY   index  %s\n' "$(tr '\n' ' ' < "${TMPDIR:-/tmp}/audit-index.$$")"
+fi
+rm -f "${TMPDIR:-/tmp}/audit-index.$$"
 while IFS=$'\t' read -r plugin root; do
   [ -d "$root" ] || continue
   while IFS=$'\t' read -r kind member; do
@@ -65,7 +72,7 @@ while IFS=$'\t' read -r plugin root; do
     seen="$seen$key"$'\n'
     run "$tool" "$plugin:$member"
   done < <(python3 "$SCRIPT_DIR/plugin-index.py" members "$root")
-done < <(python3 "$SCRIPT_DIR/plugin-index.py" list)
+done <<< "$index_out"
 
 echo "audit: $allow allowed, $rejected rejected by verdict, $deny denied"
 [ "$deny" -eq 0 ]
