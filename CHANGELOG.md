@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0 — 2026-11-11
+
+### Added
+- **claude.ai-synced plugins are gated.** Plugins synced from a claude.ai account into
+  `~/.claude/plugins/synced/<account>/` were not in `installed_plugins.json`, so every
+  `<plugin>:<member>` from them resolved to nothing and was allowed. `scripts/plugin-index.py`
+  now maps a plugin name to every root it has: installed (all marketplaces and scopes) and synced
+  (the live directory the account's `manifest.json` names, `<name>~g<N>` for generation N > 1;
+  older generations on disk are ignored). Synced skills, commands and agents need their skill
+  entry and the plugin's shell entry, exactly like installed ones.
+- `plugin.json` `"skills"`, `"commands"` and `"agents"` paths are honoured when finding a member
+  (e.g. a plugin whose commands live in `flows/`).
+- `audit.sh` walks synced plugins; `tests/test-synced-plugins.sh` (run in CI).
+
+### Changed
+- A name with several roots (installed and synced, two accounts) is checked at every root: every
+  shell approved, plus the member's own entry in each root that holds it.
+- Member lookup (skills, commands, agents incl. frontmatter `name:`) moved from `gate-skill.sh`
+  and `resolve-skill.sh` into `plugin-index.py`, so the gate, the resolver and the audit share one
+  implementation. Behaviour for installed plugins is unchanged (`tests/test-plugin-shell.sh`
+  passes unmodified apart from one label).
+
+### Upgrade note
+- After updating, every member of every synced plugin is denied until reviewed and approved:
+  `approve.py --shell <synced dir>` per plugin plus `approve.py <skill dir>` per skill. Ledger
+  entries are keyed by path, so a later generation bump (a new `~g<N>` directory) or a re-sync
+  that changes content denies again until re-approved.
+- Not covered, as before: synced plugins' hooks and MCP servers load on their own events, not
+  through `Skill`/`Agent`. Remove or disable a plugin on claude.ai to stop those.
+
 ## 0.3.0 — 2026-10-17
 
 ### Added

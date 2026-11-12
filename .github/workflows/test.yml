@@ -24,3 +24,5 @@ jobs:
         run: bash tests/test-hash-locale.sh
       - name: Plugin shell and agent gate
         run: bash tests/test-plugin-shell.sh
+      - name: claude.ai-synced plugins are gated
+        run: bash tests/test-synced-plugins.sh
