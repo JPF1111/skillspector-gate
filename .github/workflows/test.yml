@@ -22,3 +22,5 @@ jobs:
         run: sudo locale-gen en_US.UTF-8
       - name: Locale-independent skill hash
         run: bash tests/test-hash-locale.sh
+      - name: Plugin shell and agent gate
+        run: bash tests/test-plugin-shell.sh
