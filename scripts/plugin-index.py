@@ -216,6 +216,9 @@ def inside_skill_dir(root, path):
     parts = os.path.relpath(path, root).split(os.sep)
     # Compare the directory on disk, not its spelling: on a case-insensitive
     # file system (macOS default) "Skills/" and "SKILLS/" are skills/.
+    # If skills/ is itself a symlink to a sibling (skills -> other), files under
+    # other/ match too and are refused even though the shell hash covers other/:
+    # a false deny, never a bypass. No reviewed plugin is laid out that way.
     try:
         if not os.path.samefile(os.path.join(root, parts[0]), os.path.join(root, "skills")):
             return False
