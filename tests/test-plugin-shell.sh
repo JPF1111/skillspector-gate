@@ -94,7 +94,7 @@ approve --shell "$plug" --verdict APPROVE
 
 # Out of scope stays allowed.
 check allow "built-in agent type not gated"          "$(agent Explore)"
-check allow "plugin not installed (synced) not gated" "$(skill other:thing)"
+check allow "unknown plugin name not gated" "$(skill other:thing)"
 check allow "bundled skill name not gated"           "$(skill update-config)"
 check allow "other tools pass through"               '{"tool_name":"Read","tool_input":{"file_path":"/x"},"cwd":"/"}'
 

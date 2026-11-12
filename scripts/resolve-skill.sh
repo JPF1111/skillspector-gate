@@ -2,21 +2,25 @@
 # Resolve a Claude Code Skill-tool `skill` argument to its real on-disk
 # directory. Prints the resolved absolute path (symlinks followed) on
 # stdout and exits 0, or exits 1 with nothing on stdout if the skill
-# does not correspond to a locally-installed, file-backed skill (e.g.
-# a Claude Code bundled/built-in skill, or a claude.ai-synced skill —
-# neither has a directory this gate controls; see the README).
+# does not correspond to a file-backed skill this gate controls (e.g.
+# a Claude Code bundled/built-in skill, or one synced into
+# ~/.claude/skills/synced/; see the README).
 #
 # Usage: resolve-skill.sh <skill-name> <cwd>
 #        resolve-skill.sh --plugin-root <plugin>:<member>
 #
-# --plugin-root prints every distinct real install directory of the
-# plugin named before the colon, one per line, across all marketplaces and
-# scopes listed in installed_plugins.json (the Skill/Agent name carries no
-# marketplace, so any of them may be the one that runs). Exit codes:
-#   0  listed, all install dirs present
-#   1  not listed (not an installed plugin; the gate leaves it alone)
-#   2  listed but an install dir is missing or the file is unreadable
-#      (the gate denies: fail closed)
+# A "<plugin>:<skill>" name is looked up in every root plugin-index.py
+# gives for <plugin>: installed (installed_plugins.json, all marketplaces
+# and scopes) and claude.ai-synced (~/.claude/plugins/synced/, the live
+# generation). The first root holding the skill wins here; the gate itself
+# checks every root.
+#
+# --plugin-root prints every distinct real root of the plugin, one per
+# line (installed first, then synced). Exit codes:
+#   0  found, all listed install dirs present
+#   1  not an installed or synced plugin (the gate leaves it alone)
+#   2  listed in installed_plugins.json but an install dir is missing or
+#      the file is unreadable (the gate denies: fail closed)
 set -uo pipefail
 
 plugin_root_only=0
@@ -34,73 +38,22 @@ resolve_real() {
   readlink -f "$1" 2>/dev/null
 }
 
-# Plugin-qualified form: "<plugin>:<skill>"
+# Plugin-qualified form: "<plugin>:<skill>", installed or claude.ai-synced.
 if [[ "$name" == *:* ]]; then
   plugin="${name%%:*}"
   skill="${name#*:}"
-  installed_json="$HOME/.claude/plugins/installed_plugins.json"
-  [ -f "$installed_json" ] || exit 1
+  index="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/plugin-index.py"
 
   if [ "$plugin_root_only" -eq 1 ]; then
-    INSTALLED_JSON="$installed_json" PLUGIN_NAME="$plugin" python3 -c "
-import json, os, sys
-try:
-    with open(os.environ['INSTALLED_JSON']) as f:
-        data = json.load(f)
-except Exception:
-    sys.exit(2)
-target = os.environ['PLUGIN_NAME']
-roots, listed = [], False
-for key, entries in (data.get('plugins') or {}).items():
-    if key.split('@', 1)[0] != target:
-        continue
-    listed = True
-    for e in entries or []:
-        p = (e or {}).get('installPath') or ''
-        if not p or not os.path.isdir(p):
-            sys.exit(2)
-        r = os.path.realpath(p)
-        if r not in roots:
-            roots.append(r)
-if not listed:
-    sys.exit(1)
-if not roots:
-    sys.exit(2)
-print('\n'.join(roots))
-"
+    python3 "$index" roots "$plugin"
     exit $?
   fi
 
-  install_path=$(INSTALLED_JSON="$installed_json" PLUGIN_NAME="$plugin" python3 -c "
-import json, os, sys
-try:
-    with open(os.environ['INSTALLED_JSON']) as f:
-        data = json.load(f)
-except Exception:
-    sys.exit(1)
-plugins = data.get('plugins', {})
-target = os.environ['PLUGIN_NAME']
-for key, entries in plugins.items():
-    if key.split('@', 1)[0] == target and entries:
-        print(entries[0].get('installPath', ''))
-        sys.exit(0)
-sys.exit(1)
-" 2>/dev/null)
-  [ -z "$install_path" ] && exit 1
-  [ -d "$install_path" ] || exit 1
-
-  candidate="$install_path/skills/$skill"
-  if [ -d "$candidate" ]; then
-    resolve_real "$candidate"
-    exit 0
-  fi
-
-  # Fallback: search the plugin install path for a matching skill dir.
-  found=$(find "$install_path" -maxdepth 4 -type d -name "$skill" -exec test -f "{}/SKILL.md" \; -print 2>/dev/null | head -1)
-  if [ -n "$found" ]; then
-    resolve_real "$found"
-    exit 0
-  fi
+  roots=$(python3 "$index" roots "$plugin" 2>/dev/null) || exit 1
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    python3 "$index" find "$root" "$skill" skill 2>/dev/null && exit 0
+  done <<< "$roots"
   exit 1
 fi
 
@@ -124,6 +77,6 @@ while [ -n "$dir" ]; do
   dir=$(dirname "$dir")
 done
 
-# Not a locally-installed, file-backed skill (likely a Claude Code
-# bundled/built-in skill, or a claude.ai-synced one) — nothing to resolve.
+# Not a file-backed skill this gate controls (likely a Claude Code
+# bundled/built-in skill, or one under ~/.claude/skills/synced/).
 exit 1

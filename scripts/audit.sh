@@ -5,10 +5,11 @@
 # ledger entries for deleted skills do not count and new skills do.
 #
 #   - every ~/.claude/skills/<name>/SKILL.md (synced/ excluded)
-#   - for every plugin in installed_plugins.json:
-#       each skills/<name>/  -> Skill  "<plugin>:<name>"
-#       each commands/<name>.md -> Skill  "<plugin>:<name>"
-#       each agents/<name>.md   -> Agent  "<plugin>:<name>"
+#   - for every root of every installed or claude.ai-synced plugin
+#     (plugin-index.py list; plugin.json skills/commands/agents paths honoured):
+#       each skill dir          -> Skill  "<plugin>:<name>"
+#       each command .md        -> Skill  "<plugin>:<name>"
+#       each agent .md          -> Agent  "<plugin>:<name>"
 #
 # A deny caused by a recorded REJECT verdict is the gate doing what it was
 # told, so it is counted as "rejected", not as a failure.
@@ -50,31 +51,29 @@ for d in "$HOME"/.claude/skills/*/; do
   run Skill "$n"
 done
 
-installed="$HOME/.claude/plugins/installed_plugins.json"
-if [ -f "$installed" ]; then
-  while IFS=$'\x1f' read -r plugin root; do
-    [ -d "$root" ] || continue
-    for d in "$root"/skills/*/; do
-      [ -f "$d/SKILL.md" ] && run Skill "$plugin:$(basename "$d")"
-    done
-    for f in "$root"/commands/*.md; do
-      [ -f "$f" ] && run Skill "$plugin:$(basename "$f" .md)"
-    done
-    for f in "$root"/agents/*.md; do
-      [ -f "$f" ] && run Agent "$plugin:$(basename "$f" .md)"
-    done
-  done < <(python3 -c "
-import json, sys
-d = json.load(open(sys.argv[1]))
-seen = set()
-for key, entries in d.get('plugins', {}).items():
-    for e in entries or []:
-        row = (key.split('@', 1)[0], (e or {}).get('installPath', ''))
-        if row not in seen:
-            seen.add(row)
-            print(row[0] + '\x1f' + row[1])
-" "$installed")
+# Every root of every installed or synced plugin. A skill and a command
+# with the same name are one Skill call, and a name with several roots is
+# one call that checks them all, so each tool:plugin:member runs once.
+seen=$'\n'
+index_err=$(mktemp) || { echo "audit: mktemp failed" >&2; exit 1; }
+index_out=$(python3 "$SCRIPT_DIR/plugin-index.py" list 2>"$index_err")
+index_status=$?
+if [ "$index_status" -ne 0 ]; then
+  deny=$((deny+1))
+  printf 'DENY   index  %s\n' "$(tr '\n' ' ' < "$index_err")"
 fi
+rm -f "$index_err"
+while IFS=$'\t' read -r plugin root; do
+  [ -d "$root" ] || continue
+  while IFS=$'\t' read -r kind member; do
+    [ -n "$member" ] || continue
+    tool=Skill; [ "$kind" = agent ] && tool=Agent
+    key="$tool:$plugin:$member"
+    case "$seen" in *$'\n'"$key"$'\n'*) continue ;; esac
+    seen="$seen$key"$'\n'
+    run "$tool" "$plugin:$member"
+  done < <(python3 "$SCRIPT_DIR/plugin-index.py" members "$root")
+done <<< "$index_out"
 
 echo "audit: $allow allowed, $rejected rejected by verdict, $deny denied"
 [ "$deny" -eq 0 ]

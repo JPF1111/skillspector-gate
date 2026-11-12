@@ -33,7 +33,7 @@ approved simply don't run."
   plugin, the gate also checks the plugin's **shell** — everything in its install directory
   outside `skills/` (agents, commands, scripts, hooks, rules, MCP config) — so a plugin agent, a
   plugin command, or a plugin-level script a skill runs cannot change without re-approval.
-- **`audit.sh`** — runs every installed skill, plugin command and plugin agent through the gate
+- **`audit.sh`** — runs every skill, plugin command and plugin agent (installed and claude.ai-synced) through the gate
   and prints each decision.
 - **`skill-inspector`** — SkillSpector's own companion Claude Code Skill (vendored verbatim,
   see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)), which runs the static scan and then
@@ -119,24 +119,37 @@ jq --arg p "$(<plugin-dir>/scripts/resolve-skill.sh <name> "$PWD")" '.[$p]' \
 `PreToolUse` on the `Skill` tool receives only `{"skill": "<name>", "args": "..."}` — no
 resolved path. `scripts/resolve-skill.sh` maps a name to a real directory (global
 `~/.claude/skills/<name>`, project-level `.claude/skills/<name>` walking up from `cwd`, or
-`<plugin>:<skill>` resolved via `~/.claude/plugins/installed_plugins.json`).
+`<plugin>:<skill>` resolved by `scripts/plugin-index.py` against
+`~/.claude/plugins/installed_plugins.json` and the claude.ai-synced plugins under
+`~/.claude/plugins/synced/<account>/`).
 `scripts/hash-skill.sh` produces a SHA-256 over every file's path+content, sorted, so it's
 order-independent and changes on any edit. It pins `LC_ALL=C`, so the sort order (and the hash)
 is the same whether it runs from your shell or from a hook with no `LANG` set. `scripts/gate-skill.sh` ties it together and emits
 the hook's `allow`/`deny` decision.
 
 **What's gated:** anything under `~/.claude/skills/` (except `synced/`), project-level
-`.claude/skills/`, and — for any plugin listed in `installed_plugins.json`, at every install
-directory its name maps to (all marketplaces and scopes) — its skills
-(`Skill` tool), its commands (`Skill` tool, `commands/<name>.md`) and its agents (`Agent` tool,
-`agents/<name>.md`). Every plugin member also needs the plugin's shell entry
+`.claude/skills/`, and — for any plugin listed in `installed_plugins.json` (at every install
+directory its name maps to: all marketplaces and scopes) or synced from your claude.ai account
+(`~/.claude/plugins/synced/<account>/`, at the live directory the account's `manifest.json`
+names: `<name>`, or `<name>~g<N>` for generation N > 1; older generations left on disk are not
+loaded and not checked) — its skills
+(`Skill` tool), its commands (`Skill` tool, `commands/<name>.md` or the directory `plugin.json`
+`"commands"` names) and its agents (`Agent` tool, `agents/<name>.md` or by frontmatter `name:`).
+A name that is both installed and synced (or synced under two accounts) is checked at every root:
+each shell must be approved, plus the member's own entry in each root that holds it. A re-sync
+that changes content, or a generation bump that moves the live directory, denies until the new
+content is re-approved. A command or agent file inside a skill directory is not found (the
+shell hash leaves skill directories to their own entries). A broken synced manifest fails
+closed: a bad entry denies that plugin's name, and an unreadable manifest or a malformed entry
+whose name cannot be read denies *every* plugin-qualified name the index cannot resolve until it
+is fixed; `python3 scripts/plugin-index.py list` names the cause. Every plugin member also needs the plugin's shell entry
 (`hash-skill.sh --shell`: the install dir minus its skill directories and Claude Code's
 `.in_use/<pid>` lock files). Symlinks are hashed by link text; a symlink pointing outside the
 hashed directory fails the hash, so the gate denies. Unparseable hook input, and a listed plugin
 whose install dir is missing, are denied. Compiled Python (`__pycache__/`) is hashed, so a
 plugin whose hooks run Python goes stale once after its first run (and after a Python upgrade)
-and needs re-approval then. A plugin-qualified name from an installed plugin that matches no skill, command or agent
-on disk is denied.
+and needs re-approval then. A plugin-qualified name from an installed or synced plugin that matches no skill, command or
+agent on disk is denied.
 
 **Not covered — stated so no one mistakes this for more than it is:**
 - A file reached by *reading* it (the `Read` tool, `cat`, a link one skill gives to another, or a
@@ -157,7 +170,9 @@ on disk is denied.
 **What's intentionally not gated:** Claude Code's own bundled/built-in skills (no on-disk
 directory to hash) and skills synced from your claude.ai account under
 `~/.claude/skills/synced/` (first-party content via an authenticated channel — same trust
-tier as the CLI itself). The gate controls *execution*, not installation — copying files into
+tier as the CLI itself). Plugins synced from claude.ai are *not* in that tier: they are
+third-party marketplace plugins delivered through the account, so they are gated like installed
+ones (0.4.0). The gate controls *execution*, not installation — copying files into
 `~/.claude/skills/` is unrestricted; only running them is blocked.
 
 ## A note on SkillSpector's raw scores

@@ -5,24 +5,31 @@
 #
 # Skill tool:
 #   - a global/project skill: its directory must be approved.
-#   - a "<plugin>:<skill>" from an installed plugin: the skill directory
-#     AND the plugin's shell entry (everything outside its skill dirs:
-#     agents, commands, scripts, hooks, rules, mcp.json, loose files under
-#     skills/ ... — see hash-skill.sh --shell) must both be approved. A
-#     plugin name listed under several marketplaces or scopes is checked at
-#     every install dir it maps to.
-#   - a "<plugin>:<command>" (commands/<command>.md): the shell entry.
+#   - a "<plugin>:<skill>" from an installed plugin (installed_plugins.json)
+#     or a claude.ai-synced plugin (~/.claude/plugins/synced/<account>/
+#     manifest.json; the live generation only): the skill directory AND the
+#     plugin's shell entry (everything outside its skill dirs: agents,
+#     commands, scripts, hooks, rules, mcp.json, loose files under skills/
+#     ... — see hash-skill.sh --shell) must both be approved.
+#   - a "<plugin>:<command>" (commands/<command>.md, or the dir plugin.json
+#     "commands" names): the shell entry.
 # Agent tool:
-#   - a "<plugin>:<agent>" (agents/<agent>.md): the shell entry.
+#   - a "<plugin>:<agent>" (agents/<agent>.md, or by frontmatter name): the
+#     shell entry.
 #   - any other subagent type (built-in, user, project) is not gated.
+#
+# plugin-index.py maps a plugin name to its roots. A name with several
+# (several marketplaces or scopes, installed and synced, two accounts) is
+# checked at every root: every shell approved, and the member's own entry
+# in each root that holds it.
 #
 # A shell entry may carry member_verdicts {"<member>": "REJECT"} to block
 # one skill/command/agent of an otherwise approved plugin.
 #
 # A name that does not resolve to anything on disk this gate controls
-# (Claude Code's own bundled/built-in skills, claude.ai-synced skills
-# and plugins) is allowed through unmodified. An installed plugin whose
-# named member cannot be found, a listed plugin whose install dir is
+# (Claude Code's own bundled/built-in skills, and skills synced into
+# ~/.claude/skills/synced/) is allowed through unmodified. A known plugin
+# whose named member cannot be found, a listed plugin whose install dir is
 # missing, and hook input that cannot be parsed are denied fail-closed.
 #
 # Not covered: this hook fires only on Skill/Agent/Task. A plugin's own
@@ -34,6 +41,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVE="$SCRIPT_DIR/resolve-skill.sh"
 HASH="$SCRIPT_DIR/hash-skill.sh"
+INDEX="$SCRIPT_DIR/plugin-index.py"
 
 # Ledger location, home paths only (never the scripts' own install dir, so
 # a release or fork cannot ship a ledger that replaces yours):
@@ -156,12 +164,20 @@ else:
   esac
 }
 
-# Plugin-qualified name. resolve-skill.sh --plugin-root: 0 = installed (one
-# install dir per line), 1 = not an installed plugin, 2 = listed but broken.
+# Plugin-qualified name, from an installed or a claude.ai-synced plugin.
+# plugin-index.py roots: 0 = known (one root per line: every install dir,
+# then every live synced dir), 1 = not a plugin, 2 = listed in
+# installed_plugins.json but broken, or a synced manifest entry is broken.
+# Every root must have an approved shell, and every root that holds the
+# member must have the member approved. The member need only exist in one
+# root: which root Claude Code serves a name from is not stated, so each one
+# that could serve it is checked, and a root without it serves nothing.
 if [[ "$name" == *:* ]]; then
-  plugin_roots=$("$RESOLVE" --plugin-root "$name" 2>/dev/null)
+  plugin_roots=$(python3 "$INDEX" roots "${name%%:*}" 2>/dev/null)
   roots_status=$?
-  [ "$roots_status" -eq 2 ] && deny "skillspector-gate: plugin '${name%%:*}' is listed in installed_plugins.json but an install dir is missing or unreadable — blocked fail-closed."
+  [ "$roots_status" -eq 2 ] && deny "skillspector-gate: plugin '${name%%:*}' cannot be mapped safely (installed_plugins.json unreadable or an install dir missing, or a claude.ai-synced manifest entry broken; run: python3 $INDEX list) — blocked fail-closed."
+  [ "$roots_status" -eq 0 ] || [ "$roots_status" -eq 1 ] \
+    || deny "skillspector-gate: could not look up plugin '${name%%:*}' — blocked fail-closed."
 fi
 if [[ "$name" == *:* ]] && [ "${roots_status:-1}" -eq 0 ] && [ -n "$plugin_roots" ]; then
   plugin="${name%%:*}"
@@ -169,46 +185,26 @@ if [[ "$name" == *:* ]] && [ "${roots_status:-1}" -eq 0 ] && [ -n "$plugin_roots
   if ! [[ "$member" =~ ^[A-Za-z0-9_][A-Za-z0-9._:-]*$ ]] || [[ "$member" == *..* ]]; then
     deny "skillspector-gate: '$name' is not a valid plugin member name — blocked fail-closed."
   fi
-  member_path="${member//://}"
-  member_base="${member##*:}"
 
+  found=0
   while IFS= read -r plugin_root; do
     [ -n "$plugin_root" ] || continue
     require_ok "$plugin_root" shell "plugin '$plugin' shell" "$member"
-
     if [ "$kind" = agent ]; then
-      agent_file=$(find "$plugin_root" -maxdepth 3 -path "$plugin_root/skills" -prune \
-        -o -type f -path "*/agents/$member_path.md" -print 2>/dev/null | head -1)
-      if [ -z "$agent_file" ]; then
-        # Claude Code may name an agent by its frontmatter name: rather than its file.
-        agent_file=$(find "$plugin_root" -maxdepth 3 -path "$plugin_root/skills" -prune \
-          -o -type f -path "*/agents/*.md" -print 2>/dev/null \
-          | while IFS= read -r f; do
-              awk -v m="$member_base" '/^name:/ { sub(/^name:[ \t]*/, ""); gsub(/["\047]/, ""); sub(/[ \t]+$/, ""); found = ($0 == m); exit } END { exit !found }' "$f" 2>/dev/null && { echo "$f"; break; }
-            done)
-      fi
-      [ -n "$agent_file" ] || deny "skillspector-gate: agent '$name' was not found under installed plugin $plugin_root — blocked fail-closed."
+      python3 "$INDEX" find "$plugin_root" "$member" agent >/dev/null 2>&1 && found=1
       continue
     fi
-
-    skill_dir=""
-    if [ -d "$plugin_root/skills/$member_path" ] && [ -f "$plugin_root/skills/$member_path/SKILL.md" ]; then
-      skill_dir="$plugin_root/skills/$member_path"
-    else
-      skill_dir=$(find "$plugin_root" -maxdepth 4 -type d -name "$member_base" -exec test -f "{}/SKILL.md" \; -print 2>/dev/null | head -1)
-    fi
-    if [ -n "$skill_dir" ]; then
-      require_ok "$(readlink -f "$skill_dir")" skill "'$name'"
+    if skill_dir=$(python3 "$INDEX" find "$plugin_root" "$member" skill 2>/dev/null) && [ -n "$skill_dir" ]; then
+      require_ok "$skill_dir" skill "'$name'"
+      found=1
       continue
     fi
-
-    command_file=$(find "$plugin_root" -maxdepth 3 -path "$plugin_root/skills" -prune \
-      -o -type f -path "*/commands/$member_path.md" -print 2>/dev/null | head -1)
-    [ -n "$command_file" ] && continue
-
-    deny "skillspector-gate: '$name' is in installed plugin $plugin_root but no skill or command of that name was found there — blocked fail-closed."
+    python3 "$INDEX" find "$plugin_root" "$member" command >/dev/null 2>&1 && found=1
   done <<< "$plugin_roots"
-  allow
+
+  [ "$found" -eq 1 ] && allow
+  what="skill or command"; [ "$kind" = agent ] && what="agent"
+  deny "skillspector-gate: '$name' names plugin '$plugin' ($(printf '%s' "$plugin_roots" | tr '\n' ' ')) but no $what of that name was found there — blocked fail-closed."
 fi
 
 # Non-plugin subagent types (built-in, user, project) are out of scope.
@@ -217,7 +213,8 @@ fi
 resolved_dir=$("$RESOLVE" "$name" "$cwd" 2>/dev/null)
 resolve_status=$?
 
-# Not a locally-installed, file-backed skill (bundled/built-in/synced) — nothing to gate.
+# Not a locally-installed, file-backed skill (bundled/built-in, or under
+# ~/.claude/skills/synced/) — nothing to gate.
 [ $resolve_status -ne 0 ] && allow
 [ -z "$resolved_dir" ] && allow
 
