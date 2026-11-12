@@ -138,7 +138,11 @@ loaded and not checked) — its skills
 A name that is both installed and synced (or synced under two accounts) is checked at every root:
 each shell must be approved, plus the member's own entry in each root that holds it. A re-sync
 that changes content, or a generation bump that moves the live directory, denies until the new
-content is re-approved. Every plugin member also needs the plugin's shell entry
+content is re-approved. A command or agent file inside a skill directory is not found (the
+shell hash leaves skill directories to their own entries). A broken synced manifest fails
+closed: a bad entry denies that plugin's name, and an unreadable manifest or a malformed entry
+whose name cannot be read denies *every* plugin-qualified name the index cannot resolve until it
+is fixed; `python3 scripts/plugin-index.py list` names the cause. Every plugin member also needs the plugin's shell entry
 (`hash-skill.sh --shell`: the install dir minus its skill directories and Claude Code's
 `.in_use/<pid>` lock files). Symlinks are hashed by link text; a symlink pointing outside the
 hashed directory fails the hash, so the gate denies. Unparseable hook input, and a listed plugin

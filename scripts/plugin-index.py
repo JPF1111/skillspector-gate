@@ -214,7 +214,12 @@ def inside_skill_dir(root, path):
     hash-skill.sh --shell leaves those files to the skill's own entry, so a
     command or agent there would be covered by no hash the gate checks."""
     parts = os.path.relpath(path, root).split(os.sep)
-    if parts[0] != "skills":
+    # Compare the directory on disk, not its spelling: on a case-insensitive
+    # file system (macOS default) "Skills/" and "SKILLS/" are skills/.
+    try:
+        if not os.path.samefile(os.path.join(root, parts[0]), os.path.join(root, "skills")):
+            return False
+    except OSError:
         return False
     for i in range(2, len(parts)):
         if os.path.isfile(os.path.join(root, *parts[:i], "SKILL.md")):

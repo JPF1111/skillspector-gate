@@ -154,6 +154,17 @@ check deny  "command inside a skill dir denied"         "$(skill inskill:evil)"
 check deny  "agent file inside a skill dir denied"      "$(agent inskill:a)"
 check deny  "agent frontmatter name inside a skill dir denied" "$(agent inskill:bad)"
 check deny  "symlinked command into a skill dir denied" "$(skill inskill:linked)"
+# Same, spelled in another case (one directory on a case-insensitive file system).
+mk_plugin "$acct/cone" cone ', "commands": "./Skills/alpha/cmds", "agents": "./SKILLS/alpha/cmds"'
+mkdir -p "$acct/cone/skills/alpha/cmds"
+printf -- '---\nname: ag\n---\n' > "$acct/cone/skills/alpha/cmds/evil.md"
+python3 - "$acct/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1])); m["plugins"].append({"name": "cone"}); json.dump(m, open(sys.argv[1], "w"))
+EOF
+approve --shell "$acct/cone" --verdict APPROVE
+check deny  "mixed-case path into a skill dir: command denied" "$(skill cone:evil)"
+check deny  "mixed-case path into a skill dir: agent denied"   "$(agent cone:ag)"
 idx members "$acct/inskill" | grep -q evil && bad "members lists an in-skill command" || ok "members skips in-skill commands"
 # Same for an installed plugin (main denied this; the branch must too).
 iplug="$HOME/.claude/plugins/cache/mkt/ip/1.0.0"
