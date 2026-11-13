@@ -5,7 +5,8 @@ Usage:
   approve.py <skill-dir> --verdict APPROVE|CAUTION|REJECT --note "..." [--name NAME] [--skip-scan]
   approve.py --shell <plugin-install-dir> --verdict ... --note "..." [--member-verdict NAME=REJECT]
   approve.py --carry-forward [--apply]   record approvals carried to new plugin versions (carry.py)
-  approve.py --prune [--apply]           remove dead APPROVE/CAUTION entries nothing depends on
+  approve.py --prune [--apply]           remove dead plugin-cache APPROVE/CAUTION entries nothing
+                                         depends on (never a REJECT or a member REJECT)
   (--carry-forward and --prune are dry runs that change nothing unless --apply is given)
 
 Writes/updates <data-dir>/ledger.json (default ~/.claude/skillspector-gate/ledger.json, or
@@ -16,6 +17,8 @@ blocks any skill whose current content hash doesn't match an entry with
 verdict APPROVE or CAUTION.
 """
 import argparse
+import contextlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -65,6 +68,19 @@ def load_ledger():
     return {}
 
 
+@contextlib.contextmanager
+def ledger_lock():
+    """Exclusive lock for a whole read-modify-write of the ledger, so two approve.py runs
+    (e.g. a REJECT recorded while --carry-forward is hashing) cannot overwrite each other."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(LEDGER_PATH + ".lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def save_ledger(ledger):
     os.makedirs(os.path.dirname(LEDGER_PATH), exist_ok=True)
     tmp = LEDGER_PATH + ".tmp"
@@ -92,7 +108,13 @@ def live_plugin_dirs():
     dir in it. Only installed plugins: carry-forward does not apply to synced ones."""
     index = _load_module("plugin_index", "plugin-index.py")
     out = []
-    for _, root in index.dedup(index.installed_roots()):
+    try:
+        roots = index.dedup(index.installed_roots())
+    except index.Broken:
+        print("error: installed_plugins.json is unreadable or lists a missing install dir; "
+              "nothing written", file=sys.stderr)
+        sys.exit(2)
+    for _, root in roots:
         if not os.path.isdir(root):
             continue
         out.append((root, "shell", root))
@@ -127,53 +149,69 @@ def carry_plan(ledger):
 
 def do_carry_forward(apply, by):
     carry = _load_module("carry", "carry.py")
-    ledger = load_ledger()
-    plan = carry_plan(ledger)
-    now = datetime.now(timezone.utc).isoformat()
-    for d, mode, root, h, keys in plan:
-        src = ledger[keys[-1]]
-        print(f"{'carry' if apply else 'would carry'} {mode:5} {d}\n      from {keys[-1]} ({src.get('verdict')})")
-        entry = {k: v for k, v in src.items() if k not in ("member_verdicts",)}
-        entry.update({
-            "path": d,
-            "hash": h,
-            "carried_from": keys,
-            "carried_by": by,
-            "carried_at": now,
-        })
-        if mode == "shell":
-            mv = carry.carried_member_verdicts(ledger, keys)
-            if mv:
-                entry["member_verdicts"] = mv
-        ledger[d] = entry
-    if apply and plan:
-        save_ledger(ledger)
+    with ledger_lock():
+        ledger = load_ledger()
+        plan = carry_plan(ledger)
+        now = datetime.now(timezone.utc).isoformat()
+        for d, mode, root, h, keys in plan:
+            verdicts = {k: ledger[k].get("verdict") for k in keys}
+            # The most conservative source verdict: CAUTION is a revisit marker, keep it.
+            verdict = "CAUTION" if "CAUTION" in verdicts.values() else "APPROVE"
+            src = ledger[keys[0]]
+            print(f"{'carry' if apply else 'would carry'} {mode:5} {d} ({verdict})")
+            for k in keys:
+                print(f"      from {k} ({verdicts[k]})")
+            entry = {k: v for k, v in src.items() if k != "member_verdicts"}
+            entry.update({
+                "path": d,
+                "hash": h,
+                "verdict": verdict,
+                "carried_from": keys,
+                "carried_verdicts": verdicts,
+                "carried_by": by,
+                "carried_at": now,
+            })
+            if mode == "shell":
+                mv = carry.carried_member_verdicts(ledger, keys)
+                if mv:
+                    entry["member_verdicts"] = mv
+            ledger[d] = entry
+        if apply and plan:
+            save_ledger(ledger)
     print(f"{len(plan)} entr{'y' if len(plan) == 1 else 'ies'} {'recorded' if apply else 'to carry (dry run; --apply records them)'}")
 
 
 def do_prune(apply):
-    ledger = load_ledger()
-    keep_sources = set()
-    for _, _, _, _, keys in carry_plan(ledger):
-        keep_sources.update(keys)
-    dead = [k for k in sorted(ledger) if not os.path.isdir(k)]
-    prune, kept = [], []
-    for k in dead:
-        v = (ledger[k] or {}).get("verdict")
-        if v not in ("APPROVE", "CAUTION"):
-            kept.append((k, f"verdict {v}: REJECT entries are never pruned"))
-        elif k in keep_sources:
-            kept.append((k, "still carries an approval to a live dir; run --carry-forward --apply first"))
-        else:
-            prune.append(k)
-    for k, why in kept:
-        print(f"keep  {k} ({why})")
-    for k in prune:
-        print(f"{'prune' if apply else 'would prune'} {k}")
-        if apply:
-            del ledger[k]
-    if apply and prune:
-        save_ledger(ledger)
+    carry = _load_module("carry", "carry.py")
+    with ledger_lock():
+        ledger = load_ledger()
+        keep_sources = set()
+        for _, _, _, _, keys in carry_plan(ledger):
+            keep_sources.update(keys)
+        # Only plugin-cache entries: a global or project skill on an unmounted volume or in a
+        # removed worktree keeps its history.
+        dead = [k for k in sorted(ledger) if carry.lineage(k) is not None and not os.path.isdir(k)]
+        prune, kept = [], []
+        for k in dead:
+            e = ledger[k] if isinstance(ledger[k], dict) else {}
+            v = e.get("verdict")
+            mv = e.get("member_verdicts")
+            if v not in ("APPROVE", "CAUTION"):
+                kept.append((k, f"verdict {v}: REJECT entries are never pruned"))
+            elif not isinstance(mv, (dict, type(None))) or "REJECT" in (mv or {}).values():
+                kept.append((k, "holds a member REJECT: never pruned"))
+            elif k in keep_sources:
+                kept.append((k, "still carries an approval to a live dir; run --carry-forward --apply first"))
+            else:
+                prune.append(k)
+        for k, why in kept:
+            print(f"keep  {k} ({why})")
+        for k in prune:
+            print(f"{'prune' if apply else 'would prune'} {k}")
+            if apply:
+                del ledger[k]
+        if apply and prune:
+            save_ledger(ledger)
     print(f"{len(prune)} dead entr{'y' if len(prune) == 1 else 'ies'} {'pruned' if apply else 'to prune (dry run; --apply removes them)'}, {len(kept)} kept")
 
 
@@ -271,9 +309,10 @@ def main():
             entry["skillspector_severity"] = ra.get("severity")
             entry["skillspector_recommendation"] = ra.get("recommendation")
 
-    ledger = load_ledger()
-    ledger[path] = entry
-    save_ledger(ledger)
+    with ledger_lock():
+        ledger = load_ledger()
+        ledger[path] = entry
+        save_ledger(ledger)
     print(f"Recorded {args.verdict} for {name}{' (plugin shell)' if args.shell else ''} ({path})")
     print(f"  hash: {content_hash[:16]}...")
     print(f"  ledger: {LEDGER_PATH}")

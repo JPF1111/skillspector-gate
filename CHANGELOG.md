@@ -14,9 +14,19 @@
   installed plugins whose root is exactly `<cache>/<mkt>/<plugin>/<version>` carry; synced
   plugins, other install paths and global/project skills do not.
 - `approve.py --carry-forward [--apply]` records carried approvals at their new paths
-  (`carried_from`, `carried_by`, `carried_at`); `approve.py --prune [--apply]` removes dead
-  `APPROVE`/`CAUTION` entries that carry nothing. Both are dry runs without `--apply`. Prune
-  never removes a `REJECT` or an entry still carrying an approval to a live directory.
+  (`carried_from`, `carried_verdicts`, `carried_by`, `carried_at`), taking `CAUTION` if any
+  source is `CAUTION`. `approve.py --prune [--apply]` removes dead plugin-cache
+  `APPROVE`/`CAUTION` entries that carry nothing. Both are dry runs without `--apply`. Prune never
+  removes a `REJECT`, a shell holding a member `REJECT`, an entry still carrying an approval to a
+  live directory, or any entry outside the plugin cache.
+
+### Security (judge review of this release)
+- A carried entry recorded by `--carry-forward --apply` still yields to a later same-hash
+  `REJECT` anywhere, as an unrecorded carry does; it was written by a tool, not reviewed.
+- Every ledger write in `approve.py` holds an exclusive lock (`ledger.json.lock`) for the whole
+  read-modify-write, so a `REJECT` recorded while `--carry-forward`/`--prune` is hashing cannot be
+  overwritten.
+- `--carry-forward`/`--prune` exit 2 and write nothing when `installed_plugins.json` is broken.
 - `tests/test-carry-forward.sh` (run in CI).
 
 ### Changed

@@ -21,8 +21,12 @@ an approval follow the content into the new directory, under all of these condit
 A carried shell takes the member_verdicts of every matching source (union), so a member
 rejected in an earlier version stays rejected.
 
+An entry recorded by approve.py --carry-forward (it has carried_from) keeps rule 5: a later
+REJECT of the same kind and hash anywhere denies it.
+
 The gate never writes the ledger. approve.py --carry-forward records carried entries at
-their new paths (JP-run); approve.py --prune removes dead entries that nothing depends on.
+their new paths (JP-run); approve.py --prune removes dead plugin-cache entries that nothing
+depends on.
 
 Usage:
   carry.py check <ledger> <dir> <hash> <skill|shell> [<member>] [<plugin-root>]
@@ -123,6 +127,10 @@ def check(ledger, d, h, mode, member="", root=""):
         if entry.get("hash") != h:
             return "STALE", None
         if entry.get("verdict") == "REJECT":
+            return "REJECTED", None
+        # An entry recorded by approve.py --carry-forward was written by a tool, not reviewed:
+        # it keeps the carry rule that a REJECT of the same bytes anywhere wins.
+        if entry.get("carried_from") and rejected_hash(ledger, h, shell):
             return "REJECTED", None
         if shell and (entry.get("member_verdicts") or {}).get(member) == "REJECT":
             return "MEMBER_REJECTED", None

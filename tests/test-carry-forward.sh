@@ -162,9 +162,13 @@ printf 'not json' > "$tmp/broken.json"
 installed demo@mkt "$v2"
 dead_rej="$tmp/gone/rejected"; mkdir -p "$dead_rej" && printf 'r\n' > "$dead_rej/SKILL.md"
 approve "$dead_rej" --verdict REJECT
-dead_ok="$tmp/gone/approved"; mkdir -p "$dead_ok" && printf 'a\n' > "$dead_ok/SKILL.md"
+dead_ok="$cache/mkt/gone/v1/skills/approved"; mkdir -p "$dead_ok" && printf 'a\n' > "$dead_ok/SKILL.md"
 approve "$dead_ok" --verdict APPROVE
-rm -rf "$tmp/gone"
+dead_mv="$cache/mkt/gone/v1"
+approve --shell "$dead_mv" --verdict APPROVE --member-verdict writer=REJECT
+dead_global="$tmp/gone/global"; mkdir -p "$dead_global" && printf 'g\n' > "$dead_global/SKILL.md"
+approve "$dead_global" --verdict APPROVE
+rm -rf "$tmp/gone" "$cache/mkt/gone"
 before=$(shasum -a 256 < "$LEDGER")
 out=$(python3 "$scripts/approve.py" --prune)
 [ "$(shasum -a 256 < "$LEDGER")" = "$before" ] && ok "prune dry run writes nothing" || bad "prune dry run wrote"
@@ -172,7 +176,9 @@ python3 "$scripts/approve.py" --prune --apply >/dev/null
 [ "$(entry "$v1/skills/alpha")" != null ] && [ "$(entry "$v1")" != null ] \
   && ok "prune keeps live carry sources" || bad "prune removed a carry source"
 [ "$(entry "$dead_rej")" != null ] && ok "prune keeps dead REJECT" || bad "prune removed a REJECT"
-[ "$(entry "$dead_ok")" = null ] && ok "prune removes dead APPROVE that carries nothing" || bad "prune kept an unused dead entry"
+[ "$(entry "$dead_ok")" = null ] && ok "prune removes dead plugin-cache APPROVE that carries nothing" || bad "prune kept an unused dead entry"
+[ "$(entry "$dead_mv")" != null ] && ok "prune keeps a dead shell holding a member REJECT" || bad "prune removed a member REJECT"
+[ "$(entry "$dead_global")" != null ] && ok "prune leaves dead non-plugin entries alone" || bad "prune removed a non-plugin entry"
 check allow "carry still works after prune" "$(skill demo:alpha)"
 
 out=$(python3 "$scripts/approve.py" --carry-forward)
@@ -191,6 +197,37 @@ python3 "$scripts/approve.py" --prune --apply >/dev/null
 [ "$(entry "$v1/skills/alpha")" = null ] && ok "prune removes the source once carried" || bad "prune kept a materialized source"
 check allow "v2 skill allowed by its own entry" "$(skill demo:alpha)"
 check deny  "v2 member REJECT kept in materialized shell" "$(agent demo:writer)"
+# A carried entry written by --apply still yields to a later same-hash REJECT (judge M1).
+cp "$LEDGER" "$tmp/ledger.mat"
+rej2="$tmp/elsewhere2/alpha"; mkdir -p "$rej2" && printf 'alpha\n' > "$rej2/SKILL.md"
+approve "$rej2" --verdict REJECT
+check deny  "materialized carried entry yields to a later same-hash REJECT" "$(skill demo:alpha)"
+cp "$tmp/ledger.mat" "$LEDGER"
+check allow "and allows again once that REJECT is gone" "$(skill demo:alpha)"
+
+# Mixed CAUTION/APPROVE sources materialize as CAUTION (judge L2).
+v6="$cache/mkt/demo/v6"; make_plugin "$v6"
+approve "$v6/skills/alpha" --verdict CAUTION
+v7="$cache/mkt/demo/v7"; make_plugin "$v7"
+installed demo@mkt "$v7"
+python3 "$scripts/approve.py" --carry-forward --apply >/dev/null
+python3 - "$LEDGER" "$v7" <<'PY2' && ok "mixed sources materialize as CAUTION" || bad "CAUTION lost on carry-forward"
+import json, sys
+p, v7 = sys.argv[1:]
+e = json.load(open(p))[v7 + "/skills/alpha"]
+assert e["verdict"] == "CAUTION" and "CAUTION" in e["carried_verdicts"].values() and len(e["carried_from"]) == 2
+PY2
+[ -f "$LEDGER.lock" ] && ok "ledger writes take a lock file" || bad "no ledger lock file"
+rm -rf "$v6" "$v7"
+
+# Broken installed_plugins.json: carry-forward refuses cleanly, writes nothing.
+before=$(shasum -a 256 < "$LEDGER")
+printf 'not json' > "$HOME/.claude/plugins/installed_plugins.json"
+st=0; python3 "$scripts/approve.py" --carry-forward --apply >/dev/null 2>&1 || st=$?
+[ "$st" -eq 2 ] && [ "$(shasum -a 256 < "$LEDGER")" = "$before" ] \
+  && ok "broken installed_plugins.json: exit 2, nothing written" || bad "broken installed_plugins.json (exit $st)"
+installed demo@mkt "$v2"
+
 python3 "$scripts/approve.py" --carry-forward --prune >/dev/null 2>&1 \
   && bad "--carry-forward with --prune accepted" || ok "--carry-forward with --prune refused"
 python3 "$scripts/approve.py" --apply >/dev/null 2>&1 \

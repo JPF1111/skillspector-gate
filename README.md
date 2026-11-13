@@ -128,8 +128,11 @@ python3 <plugin-dir>/scripts/approve.py --prune                   # dry run
 python3 <plugin-dir>/scripts/approve.py --prune --apply
 ```
 
-`--prune` removes an entry only when its directory is gone, its verdict is `APPROVE` or `CAUTION`,
+A recorded carried entry takes `CAUTION` if any source was `CAUTION`, and it still yields to a
+later `REJECT` of the same bytes anywhere. `--prune` removes an entry only when it is in the plugin
+cache, its directory is gone, its verdict is `APPROVE` or `CAUTION`, it holds no member `REJECT`,
 and it is not still carrying an approval to a live directory. `REJECT` entries are never pruned.
+`approve.py` locks `ledger.json.lock` for every write.
 
 **Audit everything:** `bash <plugin-dir>/scripts/audit.sh --quiet` — exits non-zero if anything is
 denied for a reason other than a recorded `REJECT`.
