@@ -26,3 +26,5 @@ jobs:
         run: bash tests/test-plugin-shell.sh
       - name: claude.ai-synced plugins are gated
         run: bash tests/test-synced-plugins.sh
+      - name: Approval carry-forward across plugin versions
+        run: bash tests/test-carry-forward.sh

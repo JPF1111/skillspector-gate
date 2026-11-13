@@ -39,6 +39,8 @@ approved simply don't run."
   see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)), which runs the static scan and then
   a source-aware semantic read, and reports `APPROVE` / `CAUTION` / `REJECT`.
 - **`approve.py`** — records a verdict into the ledger so the gate lets that skill run.
+  `--carry-forward` and `--prune` maintain the ledger across plugin updates (below).
+- **`carry.py`** — the ledger lookup the gate uses, including approval carry-forward.
 
 Nothing here requires an LLM API key. Both the gate's own hashing/lookup and
 `skill-inspector`'s scripted scan step run with `skillspector --no-llm` — the *semantic*
@@ -98,8 +100,39 @@ python3 <plugin-dir>/scripts/approve.py --shell "<plugin install dir>" \
 
 `--member-verdict NAME=REJECT` blocks one skill, command or agent of an otherwise approved
 plugin. The install dir is the plugin's `installPath` in `~/.claude/plugins/installed_plugins.json`,
-or the path the gate's deny message prints. A plugin update installs to a new versioned path, so
-it needs a fresh shell approval, the same as its skills.
+or the path the gate's deny message prints. A plugin update installs to a new versioned path.
+
+**Plugin updates (carry-forward, 0.5.0+).** The ledger is keyed by real path, and a plugin update
+installs to a new `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. When a skill or
+shell there has no entry of its own, the gate carries the approval forward from an earlier
+version, but only when all of these hold:
+
+- the plugin root has exactly that cache shape (any other `installPath`, claude.ai-synced
+  plugins, and global or project skills never carry);
+- the source entry has the same marketplace, plugin directory and path inside the version root,
+  the same kind (skill or plugin shell), an identical content hash, and verdict `APPROVE` or
+  `CAUTION`;
+- no entry anywhere with that kind and hash is `REJECT`;
+- the skill's real path is inside its plugin root.
+
+An entry at the exact path always decides (a stale hash or a `REJECT` there denies). A carried
+shell keeps every `member_verdicts` REJECT of its sources. The shell hash covers
+`.claude-plugin/plugin.json`, so a release that bumps the plugin's version string changes the
+shell hash and still needs a fresh shell review; skills that did not change carry. The gate itself
+never writes the ledger. To record carried approvals at their new paths and then drop dead entries:
+
+```bash
+python3 <plugin-dir>/scripts/approve.py --carry-forward           # dry run: what would be recorded
+python3 <plugin-dir>/scripts/approve.py --carry-forward --apply   # record them (carried_from, carried_by)
+python3 <plugin-dir>/scripts/approve.py --prune                   # dry run
+python3 <plugin-dir>/scripts/approve.py --prune --apply
+```
+
+A recorded carried entry takes `CAUTION` if any source was `CAUTION`, and it still yields to a
+later `REJECT` of the same bytes anywhere. `--prune` removes an entry only when it is in the plugin
+cache, its directory is gone, its verdict is `APPROVE` or `CAUTION`, it holds no member `REJECT`,
+and it is not still carrying an approval to a live directory. `REJECT` entries are never pruned.
+`approve.py` locks `ledger.json.lock` for every write.
 
 **Audit everything:** `bash <plugin-dir>/scripts/audit.sh --quiet` — exits non-zero if anything is
 denied for a reason other than a recorded `REJECT`.
@@ -189,7 +222,9 @@ is for.
 
 - **A skill I approved is still blocked** — almost always a hash mismatch: something in the
   skill directory changed since the last `approve.py` run (even a trailing newline). Re-run
-  it.
+  it. After a plugin update, check whether the old version's entry was pruned before
+  `--carry-forward --apply` recorded the new one, or whether the update changed the shell
+  (often just the `plugin.json` version).
 - **Approved skills blocked after updating to the locale fix** — before `hash-skill.sh` pinned
   `LC_ALL=C`, the hash depended on the caller's collation: an approval run from a UTF-8 shell
   (e.g. `en_US.UTF-8`) sorted files differently from the hook, which runs with no `LANG`.

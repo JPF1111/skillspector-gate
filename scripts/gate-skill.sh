@@ -42,6 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVE="$SCRIPT_DIR/resolve-skill.sh"
 HASH="$SCRIPT_DIR/hash-skill.sh"
 INDEX="$SCRIPT_DIR/plugin-index.py"
+CARRY="$SCRIPT_DIR/carry.py"
 
 # Ledger location, home paths only (never the scripts' own install dir, so
 # a release or fork cannot ship a ledger that replaces yours):
@@ -108,12 +109,15 @@ esac
 
 [ -z "$name" ] && allow
 
-# require_ok <dir> <skill|shell> <label> [member]
+# require_ok <dir> <skill|shell> <label> [member] [plugin-root]
 # Returns only if <dir>'s ledger entry is APPROVE/CAUTION with a matching
 # hash (and, for a shell, <member> is not individually REJECTed); denies
-# otherwise.
+# otherwise. With <plugin-root>, a dir that has no entry of its own may
+# carry an approval forward from an earlier version of the same plugin
+# (same marketplace, plugin and relative path, same kind and hash, never
+# when that hash is REJECTed anywhere): see carry.py.
 require_ok() {
-  local dir="$1" mode="$2" label="$3" member="${4:-}"
+  local dir="$1" mode="$2" label="$3" member="${4:-}" root="${5:-}"
   local hash approve_cmd result
   if [ "$mode" = shell ]; then
     hash=$("$HASH" --shell "$dir" 2>/dev/null)
@@ -125,32 +129,10 @@ require_ok() {
   [ -n "$hash" ] || deny "skillspector-gate: could not hash $label ($dir) — blocked fail-closed."
   [ -f "$LEDGER" ] || deny "skillspector-gate: $label ($dir) has never been scanned (no ledger yet). Review it with the skill-inspector skill, then: $approve_cmd"
 
-  result=$(LEDGER_PATH="$LEDGER" DIR="$dir" CURRENT_HASH="$hash" MODE="$mode" MEMBER="$member" python3 -c "
-import json, os
-try:
-    with open(os.environ['LEDGER_PATH']) as f:
-        ledger = json.load(f)
-except Exception:
-    print('MISSING')
-    raise SystemExit
-entry = ledger.get(os.environ['DIR'])
-shell = os.environ['MODE'] == 'shell'
-if entry is None or (entry.get('kind') == 'plugin-shell') != shell:
-    print('MISSING')
-elif entry.get('hash') != os.environ['CURRENT_HASH']:
-    print('STALE')
-elif entry.get('verdict') == 'REJECT':
-    print('REJECTED')
-elif shell and (entry.get('member_verdicts') or {}).get(os.environ['MEMBER']) == 'REJECT':
-    print('MEMBER_REJECTED')
-elif entry.get('verdict') in ('APPROVE', 'CAUTION'):
-    print('OK')
-else:
-    print('MISSING')
-")
+  result=$(python3 "$CARRY" check "$LEDGER" "$dir" "$hash" "$mode" "$member" "$root" 2>/dev/null)
 
   case "$result" in
-    OK) return 0 ;;
+    OK|"CARRIED "*) return 0 ;;
     MISSING)
       deny "skillspector-gate: $label ($dir) has never been scanned/approved. Review it with the skill-inspector skill, then: $approve_cmd" ;;
     STALE)
@@ -189,13 +171,13 @@ if [[ "$name" == *:* ]] && [ "${roots_status:-1}" -eq 0 ] && [ -n "$plugin_roots
   found=0
   while IFS= read -r plugin_root; do
     [ -n "$plugin_root" ] || continue
-    require_ok "$plugin_root" shell "plugin '$plugin' shell" "$member"
+    require_ok "$plugin_root" shell "plugin '$plugin' shell" "$member" "$plugin_root"
     if [ "$kind" = agent ]; then
       python3 "$INDEX" find "$plugin_root" "$member" agent >/dev/null 2>&1 && found=1
       continue
     fi
     if skill_dir=$(python3 "$INDEX" find "$plugin_root" "$member" skill 2>/dev/null) && [ -n "$skill_dir" ]; then
-      require_ok "$skill_dir" skill "'$name'"
+      require_ok "$skill_dir" skill "'$name'" "" "$plugin_root"
       found=1
       continue
     fi

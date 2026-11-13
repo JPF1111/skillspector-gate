@@ -1,6 +1,6 @@
 {
   "name": "skillspector-gate",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Mandatory pre-execution security gate for the Skill and Agent tools: blocks any skill, plugin command or plugin agent until NVIDIA SkillSpector has scanned and approved it, and re-blocks the moment its content, or its plugin's agents, scripts or config, changes.",
   "author": {
     "name": "JP Finley"
