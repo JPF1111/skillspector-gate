@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.0 — 2026-11-13
+
+### Added
+- **Approval carry-forward across plugin versions.** The ledger is keyed by real path, so every
+  plugin update (a new `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`) re-blocked
+  byte-identical skills and shells and left dead entries (seen 2026-11-13: `mcp-server-dev` ×3
+  and `playground` moved `ea10b213686c` → `f75f5b25ae94` with identical hashes and had to be
+  re-approved by hand). `scripts/carry.py` now lets the gate allow a directory with no entry of
+  its own when an entry for the same marketplace, plugin directory and relative path, the same
+  kind and an identical hash is `APPROVE`/`CAUTION`, and no entry with that kind and hash is
+  `REJECT`. A carried shell keeps the union of its sources' `member_verdicts` REJECTs. Only
+  installed plugins whose root is exactly `<cache>/<mkt>/<plugin>/<version>` carry; synced
+  plugins, other install paths and global/project skills do not.
+- `approve.py --carry-forward [--apply]` records carried approvals at their new paths
+  (`carried_from`, `carried_by`, `carried_at`); `approve.py --prune [--apply]` removes dead
+  `APPROVE`/`CAUTION` entries that carry nothing. Both are dry runs without `--apply`. Prune
+  never removes a `REJECT` or an entry still carrying an approval to a live directory.
+- `tests/test-carry-forward.sh` (run in CI).
+
+### Changed
+- The gate's ledger lookup moved from inline Python in `gate-skill.sh` to `carry.py`. Exact-path
+  behaviour is unchanged: an entry at the exact path always decides, and carry-forward is
+  considered only when there is none. The gate still never writes the ledger.
+
+### Upgrade note
+- Install `carry.py` alongside the other scripts; `gate-skill.sh` 0.5.0 denies everything
+  (fail-closed) without it.
+- A release that bumps `plugin.json`'s version string changes the shell hash, so the shell still
+  needs review; unchanged skills carry.
+
 ## 0.4.0 — 2026-11-11
 
 ### Added

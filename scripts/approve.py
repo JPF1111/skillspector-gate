@@ -4,6 +4,9 @@
 Usage:
   approve.py <skill-dir> --verdict APPROVE|CAUTION|REJECT --note "..." [--name NAME] [--skip-scan]
   approve.py --shell <plugin-install-dir> --verdict ... --note "..." [--member-verdict NAME=REJECT]
+  approve.py --carry-forward [--apply]   record approvals carried to new plugin versions (carry.py)
+  approve.py --prune [--apply]           remove dead APPROVE/CAUTION entries nothing depends on
+  (--carry-forward and --prune are dry runs that change nothing unless --apply is given)
 
 Writes/updates <data-dir>/ledger.json (default ~/.claude/skillspector-gate/ledger.json, or
 ~/.claude/skillspector/ledger.json for a standalone install; override with $SKILLSPECTOR_GATE_HOME),
@@ -13,6 +16,7 @@ blocks any skill whose current content hash doesn't match an entry with
 verdict APPROVE or CAUTION.
 """
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -76,6 +80,103 @@ def hash_dir(path, shell=False):
     return out.stdout.strip()
 
 
+def _load_module(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SCRIPT_DIR, filename))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def live_plugin_dirs():
+    """(dir, mode, plugin_root) for every installed plugin root (its shell) and every skill
+    dir in it. Only installed plugins: carry-forward does not apply to synced ones."""
+    index = _load_module("plugin_index", "plugin-index.py")
+    out = []
+    for _, root in index.dedup(index.installed_roots()):
+        if not os.path.isdir(root):
+            continue
+        out.append((root, "shell", root))
+        for kind, member in index.members(root):
+            if kind != "skill":
+                continue
+            d = index.find(root, member, "skill")
+            if d:
+                out.append((d, "skill", root))
+    return out
+
+
+def carry_plan(ledger):
+    """[(dir, mode, root, hash, [source keys])] for live dirs with no entry of their own
+    whose approval carry.py would carry forward right now."""
+    carry = _load_module("carry", "carry.py")
+    plan = []
+    for d, mode, root in live_plugin_dirs():
+        if d in ledger:
+            continue
+        try:
+            h = hash_dir(d, shell=(mode == "shell"))
+        except subprocess.CalledProcessError:
+            continue
+        if not h:
+            continue
+        result, _ = carry.check(ledger, d, h, mode, "", root)
+        if result in ("CARRIED", "MEMBER_REJECTED"):
+            plan.append((d, mode, root, h, carry.sources(ledger, d, h, mode == "shell", root)))
+    return plan
+
+
+def do_carry_forward(apply, by):
+    carry = _load_module("carry", "carry.py")
+    ledger = load_ledger()
+    plan = carry_plan(ledger)
+    now = datetime.now(timezone.utc).isoformat()
+    for d, mode, root, h, keys in plan:
+        src = ledger[keys[-1]]
+        print(f"{'carry' if apply else 'would carry'} {mode:5} {d}\n      from {keys[-1]} ({src.get('verdict')})")
+        entry = {k: v for k, v in src.items() if k not in ("member_verdicts",)}
+        entry.update({
+            "path": d,
+            "hash": h,
+            "carried_from": keys,
+            "carried_by": by,
+            "carried_at": now,
+        })
+        if mode == "shell":
+            mv = carry.carried_member_verdicts(ledger, keys)
+            if mv:
+                entry["member_verdicts"] = mv
+        ledger[d] = entry
+    if apply and plan:
+        save_ledger(ledger)
+    print(f"{len(plan)} entr{'y' if len(plan) == 1 else 'ies'} {'recorded' if apply else 'to carry (dry run; --apply records them)'}")
+
+
+def do_prune(apply):
+    ledger = load_ledger()
+    keep_sources = set()
+    for _, _, _, _, keys in carry_plan(ledger):
+        keep_sources.update(keys)
+    dead = [k for k in sorted(ledger) if not os.path.isdir(k)]
+    prune, kept = [], []
+    for k in dead:
+        v = (ledger[k] or {}).get("verdict")
+        if v not in ("APPROVE", "CAUTION"):
+            kept.append((k, f"verdict {v}: REJECT entries are never pruned"))
+        elif k in keep_sources:
+            kept.append((k, "still carries an approval to a live dir; run --carry-forward --apply first"))
+        else:
+            prune.append(k)
+    for k, why in kept:
+        print(f"keep  {k} ({why})")
+    for k in prune:
+        print(f"{'prune' if apply else 'would prune'} {k}")
+        if apply:
+            del ledger[k]
+    if apply and prune:
+        save_ledger(ledger)
+    print(f"{len(prune)} dead entr{'y' if len(prune) == 1 else 'ies'} {'pruned' if apply else 'to prune (dry run; --apply removes them)'}, {len(kept)} kept")
+
+
 def run_scan(skillspector_bin, path):
     proc = subprocess.run(
         [skillspector_bin, "scan", path, "--no-llm", "--format", "json"],
@@ -89,8 +190,13 @@ def run_scan(skillspector_bin, path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("skill_dir")
-    ap.add_argument("--verdict", required=True, choices=["APPROVE", "CAUTION", "REJECT"])
+    ap.add_argument("skill_dir", nargs="?")
+    ap.add_argument("--verdict", choices=["APPROVE", "CAUTION", "REJECT"])
+    ap.add_argument("--carry-forward", action="store_true",
+                    help="Record approvals carried forward to new plugin versions (dry run without --apply).")
+    ap.add_argument("--prune", action="store_true",
+                    help="Remove dead APPROVE/CAUTION entries that carry nothing (dry run without --apply).")
+    ap.add_argument("--apply", action="store_true", help="With --carry-forward or --prune: write the ledger.")
     ap.add_argument("--note", default="")
     ap.add_argument("--name", default=None)
     ap.add_argument("--approved-by", default=os.environ.get("USER", "unknown"))
@@ -107,6 +213,20 @@ def main():
         help="With --shell: block one skill/command/agent of the plugin by name (repeatable).",
     )
     args = ap.parse_args()
+    if args.carry_forward or args.prune:
+        if args.carry_forward and args.prune:
+            ap.error("run --carry-forward and --prune separately (carry forward first)")
+        if args.skill_dir or args.verdict or args.shell or args.member_verdict:
+            ap.error("--carry-forward / --prune take no skill dir, --verdict, --shell or --member-verdict")
+        if args.carry_forward:
+            do_carry_forward(args.apply, args.approved_by)
+        else:
+            do_prune(args.apply)
+        return
+    if args.apply:
+        ap.error("--apply goes with --carry-forward or --prune")
+    if not args.skill_dir or not args.verdict:
+        ap.error("a skill dir and --verdict are required")
     if args.member_verdict and not args.shell:
         ap.error("--member-verdict needs --shell")
     member_verdicts = {}
