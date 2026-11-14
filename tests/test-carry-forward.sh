@@ -233,5 +233,51 @@ python3 "$scripts/approve.py" --carry-forward --prune >/dev/null 2>&1 \
 python3 "$scripts/approve.py" --apply >/dev/null 2>&1 \
   && bad "--apply alone accepted" || ok "--apply alone refused"
 
+# --- The 2026-11-13 incident shape: a skills-only plugin (no agents/, like playground and
+# mcp-server-dev) auto-updates while the old version dir stays on disk. Claude Code then
+# writes .orphaned_at into the old dir and leaves .in_use/<pid> locks in both. The shell
+# approval recorded on the old dir must carry to the new one, and audit.sh must report
+# 0 denied. (The 4 denies seen that day came from an audit run on the pre-0.5.0 gate.)
+lockfile() {  # lockfile <plugin-dir> <pid>
+  mkdir -p "$1/.in_use"
+  printf '{"pid":%s,"procStart":"Thu Nov 13 08:50:00 2026"}' "$2" > "$1/.in_use/$2"
+}
+make_skills_only() {  # make_skills_only <dir>
+  mkdir -p "$1/.claude-plugin" "$1/skills/pg"
+  printf '{"name":"pg"}\n' > "$1/.claude-plugin/plugin.json"
+  printf 'license\n' > "$1/LICENSE"
+  printf 'readme\n' > "$1/README.md"
+  printf 'pg\n' > "$1/skills/pg/SKILL.md"
+}
+old="$cache/official/pg/f75f5b25ae94"
+make_skills_only "$old"; lockfile "$old" 4242
+installed demo@mkt "$v2" pg@official "$old"
+approve "$old/skills/pg" --verdict APPROVE
+approve --shell "$old" --verdict APPROVE
+check allow "incident: old version allowed" "$(skill pg:pg)"
+new="$cache/official/pg/2ca121908cc6"
+make_skills_only "$new"; lockfile "$new" 4343
+printf '1794585051318' > "$old/.orphaned_at"    # the old dir stays, marked orphaned
+installed demo@mkt "$v2" pg@official "$new"
+[ "$(bash "$scripts/hash-skill.sh" --shell "$new")" = "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]['hash'])" "$LEDGER" "$old")" ] \
+  && ok "incident: new shell hash equals the approved old shell's recorded hash" || bad "incident: shell hash differs"
+check allow "incident: skill carried with the shell to the new version" "$(skill pg:pg)"
+python3 "$scripts/approve.py" --carry-forward | grep -q "would carry shell $new " \
+  && ok "incident: --carry-forward plans the shell" || bad "incident: --carry-forward misses the shell"
+[ "$(python3 "$scripts/carry.py" check "$LEDGER" "$old" "$(bash "$scripts/hash-skill.sh" --shell "$old")" shell "" "$old")" = STALE ] \
+  && ok "incident: the orphaned old dir's own shell entry is STALE (.orphaned_at is hashed; carry uses the recorded hash)" \
+  || bad "incident: orphaned old dir's shell entry not STALE (did .orphaned_at hashing change?)"
+installed pg@official "$new"   # audit only the incident plugin, independent of the demo state
+st=0; aud=$(bash "$scripts/audit.sh" 2>&1) || st=$?
+[ "$st" -eq 0 ] && printf '%s\n' "$aud" | grep -q ', 0 denied$' \
+  && ok "incident: audit.sh reports 0 denied" || bad "incident: audit.sh (exit $st): $(printf '%s' "$aud" | grep -E 'DENY|^audit:' | tr '\n' ' ')"
+printf 'pg changed\n' > "$new/skills/pg/SKILL.md"
+check deny  "incident control: a changed skill in the new version is not carried" "$(skill pg:pg)"
+printf 'pg\n' > "$new/skills/pg/SKILL.md"
+printf 'readme changed\n' > "$new/README.md"
+check deny  "incident control: a changed shell file in the new version is not carried" "$(skill pg:pg)"
+printf 'readme\n' > "$new/README.md"
+installed demo@mkt "$v2"
+
 echo "test-carry-forward: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
