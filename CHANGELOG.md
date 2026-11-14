@@ -12,12 +12,15 @@
   No gate code changes. `tests/test-carry-forward.sh` now reproduces the incident shape: a
   skills-only plugin, old version left on disk with `.orphaned_at` and `.in_use/<pid>` locks, new
   version clean. It checks that the shell and skill carry, that `--carry-forward` plans the shell,
-  that `audit.sh` reports 0 denied, and that a changed skill or shell file is not carried. With
-  shell carry disabled in the gate, 7 of its checks fail.
+  that `audit.sh` reports 0 denied, and that a changed skill or shell file is not carried. It is
+  the only test of carry with `.in_use/<pid>` lock files present: if `hash-skill.sh` stops
+  skipping them, only this section fails (4 checks). With shell carry disabled in
+  `gate-skill.sh`, 7 of the file's checks fail (2 in this section); disabled in `carry.py`, 11.
 
 ### Known
 - `hash-skill.sh --shell` hashes `.orphaned_at`, so an orphaned version dir no longer matches its
-  own recorded shell hash. Carry uses the recorded hash, so this does not affect the live gate;
+  own recorded shell hash (its exact entry turns STALE; a test pins this, so excluding the marker
+  flips a named check). Carry uses the recorded hash, so this does not affect the live gate;
   excluding the marker is left as a follow-up.
 
 ## 0.5.0 — 2026-11-13

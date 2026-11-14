@@ -264,6 +264,10 @@ installed demo@mkt "$v2" pg@official "$new"
 check allow "incident: skill carried with the shell to the new version" "$(skill pg:pg)"
 python3 "$scripts/approve.py" --carry-forward | grep -q "would carry shell $new " \
   && ok "incident: --carry-forward plans the shell" || bad "incident: --carry-forward misses the shell"
+[ "$(python3 "$scripts/carry.py" check "$LEDGER" "$old" "$(bash "$scripts/hash-skill.sh" --shell "$old")" shell "" "$old")" = STALE ] \
+  && ok "incident: the orphaned old dir's own shell entry is STALE (.orphaned_at is hashed; carry uses the recorded hash)" \
+  || bad "incident: orphaned old dir's shell entry not STALE (did .orphaned_at hashing change?)"
+installed pg@official "$new"   # audit only the incident plugin, independent of the demo state
 st=0; aud=$(bash "$scripts/audit.sh" 2>&1) || st=$?
 [ "$st" -eq 0 ] && printf '%s\n' "$aud" | grep -q ', 0 denied$' \
   && ok "incident: audit.sh reports 0 denied" || bad "incident: audit.sh (exit $st): $(printf '%s' "$aud" | grep -E 'DENY|^audit:' | tr '\n' ' ')"
