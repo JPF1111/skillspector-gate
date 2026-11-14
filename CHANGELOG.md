@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 — 2026-11-13
+
+### Tests
+- **Regression test for the 2026-11-13 shell-approval incident.** `mcp-server-dev` and
+  `playground` auto-updated `f75f5b25ae94` → `2ca121908cc6` at 15:50Z and an audit reported 4
+  shell denies. Root cause: that audit ran on the pre-0.5.0 gate (its deny text named the
+  `backup-20261113-085141` scripts, which have no `carry.py`); 0.5.0 was installed minutes later.
+  Replaying the incident ledger through 0.5.0's `carry.py` with the live shell hashes gives
+  `CARRIED`, and the later updates that day (to `b5b01ac4f889`) carried with no hand approval.
+  No gate code changes. `tests/test-carry-forward.sh` now reproduces the incident shape: a
+  skills-only plugin, old version left on disk with `.orphaned_at` and `.in_use/<pid>` locks, new
+  version clean. It checks that the shell and skill carry, that `--carry-forward` plans the shell,
+  that `audit.sh` reports 0 denied, and that a changed skill or shell file is not carried. With
+  shell carry disabled in the gate, 7 of its checks fail.
+
+### Known
+- `hash-skill.sh --shell` hashes `.orphaned_at`, so an orphaned version dir no longer matches its
+  own recorded shell hash. Carry uses the recorded hash, so this does not affect the live gate;
+  excluding the marker is left as a follow-up.
+
 ## 0.5.0 — 2026-11-13
 
 ### Added
